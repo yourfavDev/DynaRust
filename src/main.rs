@@ -3,37 +3,79 @@ mod logger;
 
 use actix_web::{web, App, HttpServer};
 use std::collections::HashMap;
+use std::env;
 use std::fs::OpenOptions;
+use std::process;
 use std::sync::Mutex;
-use crate::storage::persistance::cold_save;
+use crate::storage::persistance::{cold_save, load_db};
+use crate::storage::engine::{AppState, ClusterData}; // Import both from the same module
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize shared state with an empty HashMap.
-    let state = web::Data::new(storage::engine::AppState {
+    // Initialize logging.
+
+    // Parse command-line arguments to obtain the current node address and the cluster list.
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!(
+            "Usage: {} <current_node_address> <comma_separated_cluster_addresses>",
+            args[0]
+        );
+        process::exit(1);
+    }
+    let current_node = args[1].clone();
+    let cluster_list: Vec<String> = args[2]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    // Initialize shared state (in-memory key-value store).
+    let state = web::Data::new(AppState {
         store: Mutex::new(HashMap::new()),
     });
+
+    // Open (or create if not present) the database file.
     let mut file = OpenOptions::new()
-        .write(true)
-        // If the file does not exist, create it.
-        .create(true)
         .read(true)
-        // Optionally, use `append(true)` if you want to add content without truncating.
+        .write(true)
+        .create(true)
         .open("storage.db")?;
-    match storage::persistance::load_db(&mut file, &state) {
-        Ok(_) => engine_log!("Cold storage loaded"),
-        Err(e) => println!("Error loading DB: {}", e),
+
+    // Load the existing cold storage data into memory.
+    match load_db(&mut file, &state) {
+        Ok(_) => println!("Cold storage loaded"),
+        Err(e) => eprintln!("Error loading DB: {}", e),
     }
-    cold_save(state.clone(), 10).await;
-    log!("Starting single-instance DB engine at http://127.0.0.1:8080");
+
+    // Start a background task to periodically persist state to disk.
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            cold_save(state, 10).await;
+        }
+    });
+    println!("Cluster nodes: {:?}", cluster_list);
+
+    println!("Starting distributed DB engine at http://{}", current_node);
+
+    // Create shared cluster data and current address objects.
+    let cluster_data = web::Data::new(ClusterData { nodes: cluster_list });
+    let current_addr = web::Data::new(current_node.clone());
+
+    // Clone the bind address so we can use it when binding the server.
+    let bind_addr = current_addr.get_ref().clone();
+
+    // Start the Actix Web HTTP server.
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
+            .app_data(cluster_data.clone())
+            .app_data(current_addr.clone())
             .route("/key/{key}", web::get().to(storage::engine::get_value))
             .route("/key/{key}", web::put().to(storage::engine::put_value))
             .route("/key/{key}", web::delete().to(storage::engine::delete_value))
     })
-        .bind("127.0.0.1:8080")?
+        .bind(bind_addr.as_str())?
         .run()
         .await
 }

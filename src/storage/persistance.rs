@@ -21,7 +21,7 @@ fn save_to_cold(state: &web::Data<AppState>) -> io::Result<()> {
 }
 
 /// Spawns a background Tokio task which saves the current state to disk
-/// every 10 seconds. Make sure to pass a cloneable reference to your AppState.
+/// every `interval` seconds.
 pub async fn cold_save(state: web::Data<AppState>, interval: usize) {
     pretty_log!("ENGINE", "WORKER"; "Sync to cold storage every {} seconds", interval);
     // Spawn a background task that lives as long as the application.
@@ -35,6 +35,7 @@ pub async fn cold_save(state: web::Data<AppState>, interval: usize) {
     });
 }
 
+/// Loads the database from a "cold" storage file into the in-memory store.
 pub fn load_db(file: &mut File, state: &web::Data<AppState>) -> io::Result<()> {
     // Ensure we start reading from the beginning of the file.
     file.seek(SeekFrom::Start(0))?;
