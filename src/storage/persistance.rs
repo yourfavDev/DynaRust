@@ -6,7 +6,7 @@ use actix_web::web;
 use tokio::time::sleep;
 use crate::storage::engine::AppState;
 use std::io::Write;
-use crate::{pretty_log, worker_log};
+use crate::{pretty_log};
 
 /// Saves the current in-memory state to a "cold" storage file.
 /// Each key-value pair is written as "key=value" on a new line.

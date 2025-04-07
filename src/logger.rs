@@ -1,14 +1,10 @@
-// logger.rs
-
-use chrono::Local;
-
 /// Returns a colored version of the given tag.
 /// You can adjust the ANSI escape codes for different colors.
 pub fn colored_tag(tag: &str) -> String {
     match tag {
-        "ENGINE" => format!("\x1b[32;1m[ENGINE]\x1b[0m"), // Bright green
-        "WORKER" => format!("\x1b[34;1m[WORKER]\x1b[0m"), // Bright blue
-        "MAIN" => format!("\x1b[32;1m[MAIN THREAD]\x1b[0m"),
+        "ENGINE" => "\x1b[32;1m[ENGINE]\x1b[0m".to_string(), // Bright green
+        "WORKER" => "\x1b[34;1m[WORKER]\x1b[0m".to_string(), // Bright blue
+        "MAIN" => "\x1b[32;1m[MAIN THREAD]\x1b[0m".to_string(),
         _ => format!("[{}]", tag),
     }
 }
