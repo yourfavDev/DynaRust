@@ -1,23 +1,28 @@
 use actix_web::{web, HttpResponse, Responder};
 use futures_util::future::join_all;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// The local in-memory database state.
 pub struct AppState {
     pub(crate) store: Mutex<HashMap<String, String>>,
 }
 
-/// Shared cluster data (a list of node addresses and the desired replication factor).
+/// Shared cluster data, including dynamic membership and the list of alive nodes.
 #[derive(Clone)]
 pub struct ClusterData {
-    pub nodes: Vec<String>,
+    /// Dynamically maintained cluster membership list.
+    pub nodes: Arc<Mutex<Vec<String>>>,
     pub replication_factor: usize,
+    /// A dynamically updated list of available nodes.
+    pub alive_nodes: Arc<Mutex<Vec<String>>>,
 }
 
-/// Calculate the "responsible" node for a given key using a simple hash modulo algorithm.
+/// Calculates the "responsible" node for a given key using a simple hash modulo algorithm.
 fn get_responsible_node(key: &str, nodes: &[String]) -> String {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -26,8 +31,13 @@ fn get_responsible_node(key: &str, nodes: &[String]) -> String {
     nodes[index].clone()
 }
 
-/// Helper that computes replication targets for a given key.
-fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize) -> Vec<String> {
+/// Computes replication targets for a given key. The primary is chosen via a hash modulo,
+/// and backup nodes are chosen in a circular fashion.
+fn get_replication_nodes(
+    key: &str,
+    nodes: &[String],
+    replication_factor: usize,
+) -> Vec<String> {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     let hash = hasher.finish();
@@ -37,7 +47,7 @@ fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize)
     let mut targets = Vec::with_capacity(replication_factor);
     targets.push(nodes[primary_index].clone());
 
-    // Choose additional targets (backups) in a circular fashion.
+    // Choose additional targets in a circular fashion.
     let mut i = 1;
     while targets.len() < replication_factor && i < total_nodes {
         let idx = (primary_index + i) % total_nodes;
@@ -47,7 +57,61 @@ fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize)
     targets
 }
 
-/// GET handler: unchanged (for brevity)
+/// Handler for a node joining the cluster.
+/// A POST to `/join` with a JSON body `{ "node": "address" }` adds the node
+/// to the membership list (if not already present) and returns the updated list.
+#[derive(Deserialize)]
+pub struct JoinRequest {
+    node: String,
+}
+
+pub async fn join_cluster(
+    cluster: web::Data<ClusterData>,
+    request: web::Json<JoinRequest>,
+) -> impl Responder {
+    let new_node = request.node.clone();
+    let mut nodes_guard = cluster.nodes.lock().unwrap();
+    if !nodes_guard.contains(&new_node) {
+        nodes_guard.push(new_node);
+    }
+    HttpResponse::Ok().json(nodes_guard.clone())
+}
+
+/// GET membership handler: returns the current membership list as JSON.
+pub async fn get_membership(cluster_data: web::Data<ClusterData>) -> impl Responder {
+    let nodes = cluster_data.nodes.lock().unwrap().clone();
+    HttpResponse::Ok().json(nodes)
+}
+
+/// New endpoint: update membership received via push from a peer.
+/// A POST to `/update_membership` with JSON `{ "nodes": [...] }` merges the list.
+#[derive(Deserialize)]
+struct UpdateMembershipRequest {
+    nodes: Vec<String>,
+}
+
+pub async fn update_membership(
+    cluster: web::Data<ClusterData>,
+    req: web::Json<UpdateMembershipRequest>,
+) -> impl Responder {
+    let incoming_nodes = req.nodes.clone();
+    let mut local = cluster.nodes.lock().unwrap();
+    let mut changed = false;
+    for node in incoming_nodes {
+        if !local.contains(&node) {
+            local.push(node);
+            changed = true;
+        }
+    }
+    if changed {
+        println!("Membership updated via push, new membership: {:?}", *local);
+    }
+    HttpResponse::Ok().json(local.clone())
+}
+
+/// GET handler for fetching a key's value.
+/// If the current node is responsible, it serves from local storage;
+/// otherwise, it forwards the request to the responsible node.
 pub async fn get_value(
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
@@ -55,7 +119,11 @@ pub async fn get_value(
     key: web::Path<String>,
 ) -> impl Responder {
     let key_val = key.into_inner();
-    let responsible = get_responsible_node(&key_val, &cluster_data.nodes);
+    let nodes = {
+        let guard = cluster_data.nodes.lock().unwrap();
+        guard.clone()
+    };
+    let responsible = get_responsible_node(&key_val, &nodes);
 
     if responsible == *current_addr.get_ref() {
         let store = data.store.lock().unwrap();
@@ -70,9 +138,10 @@ pub async fn get_value(
         match client.get(url).send().await {
             Ok(resp) => {
                 let reqwest_status = resp.status();
-                let text = resp.text().await.unwrap_or_else(|_| {
-                    "Error reading response from responsible node".to_string()
-                });
+                let text = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Error reading response".to_string());
                 let actix_status = actix_web::http::StatusCode::from_u16(reqwest_status.as_u16())
                     .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
                 HttpResponse::build(actix_status).body(text)
@@ -84,8 +153,8 @@ pub async fn get_value(
 }
 
 /// PUT handler: Inserts or updates a key–value pair with dynamic replication.
-/// It calculates the target nodes using get_replication_nodes() and then
-/// concurrently sends the write to all target nodes.
+/// The handler computes target nodes using `get_replication_nodes()` and then
+/// concurrently sends the write request to all targets.
 pub async fn put_value(
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
@@ -94,17 +163,19 @@ pub async fn put_value(
     body: String,
 ) -> impl Responder {
     let key_val = key.into_inner();
+    let nodes = {
+        let guard = cluster_data.nodes.lock().unwrap();
+        guard.clone()
+    };
     let replication_factor = cluster_data.replication_factor;
-    let targets = get_replication_nodes(&key_val, &cluster_data.nodes, replication_factor);
+    let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();
     let mut tasks = Vec::new();
 
     for target in targets {
-        // Clone the key and body for use in each iteration.
         let key_clone = key_val.clone();
         let body_clone = body.clone();
-        // Clone `data` so that each task gets its own handle.
         let data_clone = data.clone();
 
         if target == *current_addr.get_ref() {
@@ -119,21 +190,17 @@ pub async fn put_value(
             let client_clone = client.clone();
             let forward_task = async move {
                 let _resp = client_clone.put(&url).body(body_clone).send().await?;
-                // For simplicity, just return the target name after forwarding.
                 Ok(format!("Forwarded to {}", target))
             };
             tasks.push(tokio::spawn(forward_task));
         }
     }
-
-    // Execute all spawned tasks concurrently and wait for them to complete.
-    let _results = futures_util::future::join_all(tasks).await;
-
+    let _results = join_all(tasks).await;
     HttpResponse::Created().body("Key stored with dynamic replication")
 }
 
-/// DELETE handler: Broadcasts deletion to all replicas holding the key.
-/// The delete operation is sent to all nodes in the replication group.
+/// DELETE handler: Broadcasts deletion to all replicas that hold the key.
+/// The handler concurrently sends a deletion request to every target.
 pub async fn delete_value(
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
@@ -141,13 +208,16 @@ pub async fn delete_value(
     key: web::Path<String>,
 ) -> impl Responder {
     let key_val = key.into_inner();
-    // Compute the replication group for the key.
+    let nodes = {
+        let guard = cluster_data.nodes.lock().unwrap();
+        guard.clone()
+    };
     let replication_factor = cluster_data.replication_factor;
-    let targets = get_replication_nodes(&key_val, &cluster_data.nodes, replication_factor);
+    let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();
-    // Explicitly type the tasks vector to satisfy the compiler.
-    let mut tasks: Vec<tokio::task::JoinHandle<Result<String, reqwest::Error>>> = Vec::new();
+    let mut tasks =
+        Vec::<tokio::task::JoinHandle<Result<String, reqwest::Error>>>::new();
 
     for target in targets {
         let key_clone = key_val.clone();
@@ -173,8 +243,6 @@ pub async fn delete_value(
             tasks.push(tokio::spawn(forward_task));
         }
     }
-
-    // Execute all spawned deletion tasks concurrently.
     let _results = join_all(tasks).await;
     HttpResponse::Ok().body("Key deleted from all replicas")
 }

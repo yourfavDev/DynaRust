@@ -1,2 +1,2 @@
-foawdawdo=bar
-foo=bar
+greeting=hello world
+sample_key={"value": "distributed_example"}

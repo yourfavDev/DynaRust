@@ -6,7 +6,6 @@ use actix_web::web;
 use tokio::time::sleep;
 use crate::storage::engine::AppState;
 use std::io::Write;
-use crate::{pretty_log};
 
 /// Saves the current in-memory state to a "cold" storage file.
 /// Each key-value pair is written as "key=value" on a new line.
@@ -23,7 +22,6 @@ fn save_to_cold(state: &web::Data<AppState>) -> io::Result<()> {
 /// Spawns a background Tokio task which saves the current state to disk
 /// every `interval` seconds.
 pub async fn cold_save(state: web::Data<AppState>, interval: usize) {
-    pretty_log!("ENGINE", "WORKER"; "Sync to cold storage every {} seconds", interval);
     // Spawn a background task that lives as long as the application.
     tokio::spawn(async move {
         loop {
