@@ -1,11 +1,10 @@
 use actix_web::{web, HttpResponse, Responder};
 use futures_util::future::join_all;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// The local in-memory database state.
 pub struct AppState {
@@ -17,9 +16,7 @@ pub struct AppState {
 pub struct ClusterData {
     /// Dynamically maintained cluster membership list.
     pub nodes: Arc<Mutex<Vec<String>>>,
-    pub replication_factor: usize,
-    /// A dynamically updated list of available nodes.
-    pub alive_nodes: Arc<Mutex<Vec<String>>>,
+    pub replication_factor: usize
 }
 
 /// Calculates the "responsible" node for a given key using a simple hash modulo algorithm.
@@ -81,32 +78,6 @@ pub async fn join_cluster(
 pub async fn get_membership(cluster_data: web::Data<ClusterData>) -> impl Responder {
     let nodes = cluster_data.nodes.lock().unwrap().clone();
     HttpResponse::Ok().json(nodes)
-}
-
-/// New endpoint: update membership received via push from a peer.
-/// A POST to `/update_membership` with JSON `{ "nodes": [...] }` merges the list.
-#[derive(Deserialize)]
-struct UpdateMembershipRequest {
-    nodes: Vec<String>,
-}
-
-pub async fn update_membership(
-    cluster: web::Data<ClusterData>,
-    req: web::Json<UpdateMembershipRequest>,
-) -> impl Responder {
-    let incoming_nodes = req.nodes.clone();
-    let mut local = cluster.nodes.lock().unwrap();
-    let mut changed = false;
-    for node in incoming_nodes {
-        if !local.contains(&node) {
-            local.push(node);
-            changed = true;
-        }
-    }
-    if changed {
-        println!("Membership updated via push, new membership: {:?}", *local);
-    }
-    HttpResponse::Ok().json(local.clone())
 }
 
 /// GET handler for fetching a key's value.

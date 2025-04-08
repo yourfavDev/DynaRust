@@ -89,8 +89,7 @@ async fn main() -> std::io::Result<()> {
     // Initialize cluster data with dynamic membership.
     let cluster_data = web::Data::new(ClusterData {
         nodes: std::sync::Arc::new(Mutex::new(initial_nodes)),
-        replication_factor,
-        alive_nodes: std::sync::Arc::new(Mutex::new(Vec::new())),
+        replication_factor
     });
 
     // Spawn the membership synchronization background task.
