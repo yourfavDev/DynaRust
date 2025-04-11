@@ -1,47 +1,44 @@
-name: Release Binary
+name: Create Release
 
 on:
   push:
-    branches:
-      - main
-
-permissions:
-  contents: write
+    tags:
+      - "*"  # Trigger for all tag pushes
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Rust Toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - id: validate_tag
+        name: Validate and Fix Tag Name
+        shell: bash
+        run: |
+          # Extract the tag name from the ref (removing 'refs/tags/')
+          TAG="${GITHUB_REF##*/}"
+          echo "Original tag: ${TAG}"
 
-      - name: Build the Binary
-        run: cargo build --release
+          # Check if the tag is exactly 40 hex characters (a commit SHA)
+          if [[ "${TAG}" =~ ^[0-9a-f]{40}$ ]]; then
+            # If true, adjust the tag name.
+            # Here we prefix with 'v' and use the first 7 characters (as is common for abbreviated SHAs).
+            NEW_TAG="v${TAG:0:7}"
+            echo "Tag appears to be a commit SHA. Adjusting tag to: ${NEW_TAG}"
+            TAG="${NEW_TAG}"
+          else
+            echo "Tag is valid: ${TAG}"
+          fi
 
-      - name: Create GitHub Release
-        id: create_release
+          # Set the adjusted tag as an output for later steps
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.sha }}
-          release_name: Release ${{ github.sha }}
-          body: "Automated release for commit ${{ github.sha }}"
-          draft: false
-          prerelease: false
-
-      - name: Upload Binary Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/release/my_binary
-          asset_name: my_binary-${{ github.sha }}
-          asset_content_type: application/octet-stream
+          tag_name: ${{ steps.validate_tag.outputs.tag }}
+          release_name: "Release ${{ steps.validate_tag.outputs.tag }}"
+          body: "Changelog for release ${{ steps.validate_tag.outputs.tag }}"
