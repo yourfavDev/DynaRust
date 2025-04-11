@@ -8,12 +8,16 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Grant the workflow write permission to repository contents.
+    permissions:
+      contents: write
+
     steps:
-      # Check out the repository code
+      # 1. Checkout the repository code
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      # Cache dependencies (example for Node.js projects)
+      # 2. Cache dependencies (example for Node.js projects)
       - name: Cache Node Modules
         uses: actions/cache@v3
         with:
@@ -22,38 +26,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # (Optional) Install dependencies if your workflow requires them
+      # 3. Optionally install dependencies if needed (for example, to build assets)
       - name: Install Dependencies
         if: exists('package-lock.json')
         run: npm ci
 
-      # Validate and fix the tag name if it matches a 40-character hexadecimal string
+      # 4. Validate and fix the tag name if it matches a 40-character commit SHA
       - id: validate_tag
         name: Validate and Fix Tag Name
         shell: bash
         run: |
-          # Extract tag name from the Git reference
+          # Extract the tag name from the Git ref (removing 'refs/tags/')
           TAG="${GITHUB_REF##*/}"
           echo "Original tag: ${TAG}"
           
-          # If tag is exactly 40 hex characters (looks like a commit SHA), adjust it
+          # If tag is exactly 40 hex characters (i.e. a commit SHA)
           if [[ "${TAG}" =~ ^[0-9a-f]{40}$ ]]; then
+            # Adjust the tag name: prefix with 'v' and shorten (commonly to 7 chars)
             NEW_TAG="v${TAG:0:7}"
             echo "Tag appears to be a commit SHA. Adjusting tag to: ${NEW_TAG}"
             TAG="${NEW_TAG}"
           else
             echo "Tag is valid: ${TAG}"
           fi
-          
-          # Set the adjusted tag as output for later steps
+          # Set the (possibly adjusted) tag as output for later steps
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      # Create the GitHub release using the validated/adjusted tag
+      # 5. Create the GitHub release using the validated/adjusted tag
       - name: Create Release
         uses: actions/create-release@v1
         env:
+          # Using the default GITHUB_TOKEN. If you encounter permission issues in a fork,
+          # consider using a PAT with the necessary scopes.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.validate_tag.outputs.tag }}
-          release_name: "Release ${{ steps.validate_tag.outputs.tag }}"
-          body: "Changelog for release ${{ steps.validate_tag.outputs.tag }}"
+          release_name: "Automated release for commit ${{ steps.validate_tag.outputs.tag }}"
+          body: "Automated release for commit ${{ steps.validate_tag.outputs.tag }}"
