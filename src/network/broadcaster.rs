@@ -1,6 +1,6 @@
 use std::time::Duration;
 use reqwest;
-use actix_web::web;
+use actix_web::{web, HttpResponse, Responder};
 use serde_json::json;
 use crate::storage::engine::ClusterData;
 
@@ -96,7 +96,8 @@ pub async fn membership_sync(
                     continue;
                 }
                 let update_url = format!("http://{}/update_membership", node);
-                let push_payload = json!({ "nodes": updated_membership });
+                let push_payload = &updated_membership;
+
                 match client.post(&update_url).json(&push_payload).send().await {
                     Ok(resp) => {
                         if resp.status().is_success() {
@@ -121,4 +122,28 @@ pub async fn membership_sync(
             }
         }
     }
+}
+
+pub async fn update_membership(
+    cluster_data: web::Data<ClusterData>,
+    payload: web::Json<Vec<String>>,
+) -> impl Responder {
+    let mut local_guard = cluster_data.nodes.lock().unwrap();
+    let mut updated = false;
+    for node in payload.into_inner() {
+        if !local_guard.contains(&node) {
+            local_guard.push(node);
+            updated = true;
+        }
+    }
+    if updated {
+        println!("Updated membership: {:?}", local_guard);
+    }
+    HttpResponse::Ok().finish()
+}
+
+/// GET membership handler: returns the current membership list as JSON.
+pub async fn get_membership(cluster_data: web::Data<ClusterData>) -> impl Responder {
+    let nodes = cluster_data.nodes.lock().unwrap().clone();
+    HttpResponse::Ok().json(nodes)
 }

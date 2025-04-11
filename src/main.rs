@@ -10,7 +10,7 @@ use std::fs::OpenOptions;
 use std::process;
 use std::sync::Mutex;
 use storage::engine::{
-    AppState, ClusterData, delete_value, get_membership, get_value, join_cluster,
+    AppState, ClusterData, delete_value, get_value, join_cluster,
     put_value,
 };
 use storage::persistance::{cold_save, load_db};
@@ -82,7 +82,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn({
         let state = state.clone();
         async move {
-            cold_save(state, 10).await;
+            cold_save(state, 60).await;
         }
     });
 
@@ -98,7 +98,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(membership_sync(
         cluster_data_clone,
         current_node_clone,
-        30,
+        5,
     ));
 
     println!("Starting distributed DB engine at http://{}", current_node);
@@ -110,8 +110,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(current_node.clone()))
             // Endpoints for joining and synchronizing membership.
             .route("/join", web::post().to(join_cluster))
-            .route("/membership", web::get().to(get_membership))
-            // Key–value endpoints.
+            .route("/membership", web::get().to(network::broadcaster::get_membership))
+            .route("/update_membership", web::post().to(network::broadcaster::update_membership))
             .route("/key/{key}", web::get().to(get_value))
             .route("/key/{key}", web::put().to(put_value))
             .route("/key/{key}", web::delete().to(delete_value))

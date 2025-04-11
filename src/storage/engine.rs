@@ -74,11 +74,6 @@ pub async fn join_cluster(
     HttpResponse::Ok().json(nodes_guard.clone())
 }
 
-/// GET membership handler: returns the current membership list as JSON.
-pub async fn get_membership(cluster_data: web::Data<ClusterData>) -> impl Responder {
-    let nodes = cluster_data.nodes.lock().unwrap().clone();
-    HttpResponse::Ok().json(nodes)
-}
 
 /// GET handler for fetching a key's value.
 /// If the current node is responsible, it serves from local storage;
