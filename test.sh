@@ -9,7 +9,7 @@ set -e
 trap "kill $(jobs -p) 2>/dev/null" EXIT
 
 # Total number of cluster nodes to start.
-NODES=500
+NODES=100
 # Base port for the first (seed) node.
 BASE_PORT=6660
 

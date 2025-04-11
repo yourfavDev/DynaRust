@@ -1,0 +1,5 @@
+digraph INFRA {
+  node [ color = "black", fillcolor = "#E6E6E6", height =1, style = "filled,bold,rounded", fontname = "Arial" ];
+  "server" [ label = "server
+(Docker::Container)", shape =rectangle, fillcolor = "#B7E0FF" ];
+}

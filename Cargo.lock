@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "DynaRust"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "actix-web",
  "base64 0.21.7",
