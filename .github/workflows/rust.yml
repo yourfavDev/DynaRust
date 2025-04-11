@@ -8,30 +8,60 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Grant the workflow write permission to repository contents.
     permissions:
       contents: write
 
     steps:
       # 1. Checkout the repository code
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # 2. Cache dependencies (example for Node.js projects)
-      - name: Cache Node Modules
+      # 2. Cache Cargo Registry
+      - name: Cache Cargo Registry
         uses: actions/cache@v3
         with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-node-
+            ${{ runner.os }}-cargo-registry-
 
-      # 3. Optionally install dependencies if needed (for example, to build assets)
-      - name: Install Dependencies
-        if: exists('package-lock.json')
-        run: npm ci
+      # 3. Cache Cargo Git Repositories
+      - name: Cache Cargo Git Repositories
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
 
-      # 4. Validate and fix the tag name if it matches a 40-character commit SHA
+      # 4. Cache Build Artifacts (the target directory)
+      - name: Cache Build Output
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
+      # 5. Build your project with Cargo in release mode
+      - name: Build with Cargo
+        run: cargo build --release
+
+      # 6. Locate the compiled binary
+      - name: Locate Binary File
+        id: locate_binary
+        run: |
+          # Adjust the binary name as needed. Here we assume the built binary is named "DynaRust"
+          binary_path=$(find target/release -maxdepth 1 -type f -executable -name 'DynaRust*')
+          if [ -z "$binary_path" ]; then
+            echo "Binary file not found!"
+            exit 1
+          else
+            echo "Binary file found: ${binary_path}"
+            echo "BINARY_PATH=${binary_path}" >> $GITHUB_ENV
+          fi
+
+      # 7. Validate and fix the tag name if it matches a 40-character commit SHA
       - id: validate_tag
         name: Validate and Fix Tag Name
         shell: bash
@@ -40,9 +70,9 @@ jobs:
           TAG="${GITHUB_REF##*/}"
           echo "Original tag: ${TAG}"
           
-          # If tag is exactly 40 hex characters (i.e. a commit SHA)
+          # If the tag is exactly 40 hex characters (i.e. a commit SHA),
+          # adjust the tag by prefixing it with 'v' and shortening it to 7 characters.
           if [[ "${TAG}" =~ ^[0-9a-f]{40}$ ]]; then
-            # Adjust the tag name: prefix with 'v' and shorten (commonly to 7 chars)
             NEW_TAG="v${TAG:0:7}"
             echo "Tag appears to be a commit SHA. Adjusting tag to: ${NEW_TAG}"
             TAG="${NEW_TAG}"
@@ -52,14 +82,25 @@ jobs:
           # Set the (possibly adjusted) tag as output for later steps
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      # 5. Create the GitHub release using the validated/adjusted tag
-      - name: Create Release
+      # 8. Create the GitHub Release using the validated tag
+      - name: Create GitHub Release
+        id: create_release
         uses: actions/create-release@v1
         env:
-          # Using the default GITHUB_TOKEN. If you encounter permission issues in a fork,
-          # consider using a PAT with the necessary scopes.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.validate_tag.outputs.tag }}
-          release_name: "Automated release for commit ${{ steps.validate_tag.outputs.tag }}"
-          body: "Automated release for commit ${{ steps.validate_tag.outputs.tag }}"
+          release_name: "Release ${{ steps.validate_tag.outputs.tag }}"
+          draft: false
+          prerelease: false
+
+      # 9. Upload the built binary as a release asset
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.BINARY_PATH }}
+          asset_name: DynaRust
+          asset_content_type: application/octet-stream
