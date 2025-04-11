@@ -15,8 +15,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct ClusterData {
     /// Dynamically maintained cluster membership list.
-    pub nodes: Arc<Mutex<Vec<String>>>,
-    pub replication_factor: usize
+    pub nodes: Arc<Mutex<Vec<String>>>
 }
 
 /// Calculates the "responsible" node for a given key using a simple hash modulo algorithm.
@@ -133,7 +132,7 @@ pub async fn put_value(
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
     };
-    let replication_factor = cluster_data.replication_factor;
+    let replication_factor = cluster_data.nodes.lock().unwrap().len();
     let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();
@@ -178,7 +177,7 @@ pub async fn delete_value(
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
     };
-    let replication_factor = cluster_data.replication_factor;
+    let replication_factor = cluster_data.nodes.lock().unwrap().len();
     let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();

@@ -1,7 +1,6 @@
 use std::time::Duration;
 use reqwest;
 use actix_web::{web, HttpResponse, Responder};
-use serde_json::json;
 use crate::storage::engine::ClusterData;
 
 /// Membership sync task.

@@ -32,7 +32,6 @@ async fn main() -> std::io::Result<()> {
 
     // Start with our own node as the initial membership.
     let initial_nodes = vec![current_node.clone()];
-
     // If a join node is provided, try joining the cluster.
     if args.len() >= 3 {
         let join_node = args[2].clone();
@@ -60,8 +59,7 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    // For example, choose 3 replicas.
-    let replication_factor = 3;
+
 
     // Initialize the local in-memory key–value store.
     let state = web::Data::new(AppState {
@@ -88,8 +86,7 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize cluster data with dynamic membership.
     let cluster_data = web::Data::new(ClusterData {
-        nodes: std::sync::Arc::new(Mutex::new(initial_nodes)),
-        replication_factor
+        nodes: std::sync::Arc::new(Mutex::new(initial_nodes))
     });
 
     // Spawn the membership synchronization background task.
