@@ -13,7 +13,13 @@ use std::sync::{Arc, Mutex};
 pub struct AppState {
     pub store: Mutex<HashMap<String, HashMap<String, Value>>>,
 }
-
+/// NEW: Handler to return the entire in-memory store as JSON.
+/// This endpoint is used by newly joined nodes to fetch
+/// the cold (persisted) state from a peer.
+pub async fn get_store(state: web::Data<AppState>) -> impl Responder {
+    let store = state.store.lock().unwrap();
+    HttpResponse::Ok().json(&*store)
+}
 /// Shared cluster data, including dynamic membership and the list of alive nodes.
 #[derive(Clone)]
 pub struct ClusterData {

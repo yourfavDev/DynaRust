@@ -9,6 +9,7 @@ dependencies = [
  "actix-web",
  "base64 0.21.7",
  "futures-util",
+ "once_cell",
  "reqwest",
  "serde",
  "serde_json",

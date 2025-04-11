@@ -146,3 +146,4 @@ pub async fn get_membership(cluster_data: web::Data<ClusterData>) -> impl Respon
     let nodes = cluster_data.nodes.lock().unwrap().clone();
     HttpResponse::Ok().json(nodes)
 }
+
