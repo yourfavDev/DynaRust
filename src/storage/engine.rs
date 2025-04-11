@@ -1,21 +1,24 @@
 use actix_web::{web, HttpResponse, Responder};
 use futures_util::future::join_all;
-use serde::{Deserialize};
+use reqwest;
+use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 /// The local in-memory database state.
+/// Each partition key maps to a JSON object (a key–value map of attributes).
 pub struct AppState {
-    pub(crate) store: Mutex<HashMap<String, String>>,
+    pub store: Mutex<HashMap<String, HashMap<String, Value>>>,
 }
 
 /// Shared cluster data, including dynamic membership and the list of alive nodes.
 #[derive(Clone)]
 pub struct ClusterData {
     /// Dynamically maintained cluster membership list.
-    pub nodes: Arc<Mutex<Vec<String>>>
+    pub nodes: Arc<Mutex<Vec<String>>>,
 }
 
 /// Calculates the "responsible" node for a given key using a simple hash modulo algorithm.
@@ -73,7 +76,6 @@ pub async fn join_cluster(
     HttpResponse::Ok().json(nodes_guard.clone())
 }
 
-
 /// GET handler for fetching a key's value.
 /// If the current node is responsible, it serves from local storage;
 /// otherwise, it forwards the request to the responsible node.
@@ -93,7 +95,7 @@ pub async fn get_value(
     if responsible == *current_addr.get_ref() {
         let store = data.store.lock().unwrap();
         if let Some(value) = store.get(&key_val) {
-            HttpResponse::Ok().body(value.clone())
+            HttpResponse::Ok().json(value)
         } else {
             HttpResponse::NotFound().body("Key not found")
         }
@@ -107,7 +109,9 @@ pub async fn get_value(
                     .text()
                     .await
                     .unwrap_or_else(|_| "Error reading response".to_string());
-                let actix_status = actix_web::http::StatusCode::from_u16(reqwest_status.as_u16())
+                let actix_status = actix_web::http::StatusCode::from_u16(
+                    reqwest_status.as_u16(),
+                )
                     .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
                 HttpResponse::build(actix_status).body(text)
             }
@@ -120,27 +124,31 @@ pub async fn get_value(
 /// PUT handler: Inserts or updates a key–value pair with dynamic replication.
 /// The handler computes target nodes using `get_replication_nodes()` and then
 /// concurrently sends the write request to all targets.
+///
+/// This version expects a JSON object (a map of attributes) in the request body.
 pub async fn put_value(
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     key: web::Path<String>,
-    body: String,
+    body: web::Json<HashMap<String, Value>>,
 ) -> impl Responder {
     let key_val = key.into_inner();
     let nodes = {
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
     };
-    let replication_factor = cluster_data.nodes.lock().unwrap().len();
+    let replication_factor = nodes.len();
     let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();
     let mut tasks = Vec::new();
 
+    // Extract the inner HashMap from the Json wrapper.
+    // This is the fix: use `.0.clone()` instead of `.clone().into_inner()`.
     for target in targets {
         let key_clone = key_val.clone();
-        let body_clone = body.clone();
+        let body_clone = body.0.clone();
         let data_clone = data.clone();
 
         if target == *current_addr.get_ref() {
@@ -154,7 +162,8 @@ pub async fn put_value(
             let url = format!("http://{}/key/{}", target, key_val);
             let client_clone = client.clone();
             let forward_task = async move {
-                let _resp = client_clone.put(&url).body(body_clone).send().await?;
+                let _resp =
+                    client_clone.put(&url).json(&body_clone).send().await?;
                 Ok(format!("Forwarded to {}", target))
             };
             tasks.push(tokio::spawn(forward_task));
@@ -177,7 +186,7 @@ pub async fn delete_value(
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
     };
-    let replication_factor = cluster_data.nodes.lock().unwrap().len();
+    let replication_factor = nodes.len();
     let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
 
     let client = reqwest::Client::new();

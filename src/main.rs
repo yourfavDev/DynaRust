@@ -59,8 +59,6 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-
-
     // Initialize the local in-memory key–value store.
     let state = web::Data::new(AppState {
         store: Mutex::new(HashMap::new()),
@@ -80,7 +78,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn({
         let state = state.clone();
         async move {
-            cold_save(state, 60).await;
+            cold_save(state, 6).await;
         }
     });
 
@@ -95,7 +93,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(membership_sync(
         cluster_data_clone,
         current_node_clone,
-        5,
+        60,
     ));
 
     println!("Starting distributed DB engine at http://{}", current_node);
