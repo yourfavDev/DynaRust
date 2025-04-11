@@ -78,7 +78,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn({
         let state = state.clone();
         async move {
-            cold_save(state, 6).await;
+            cold_save(state, 60).await;
         }
     });
 
