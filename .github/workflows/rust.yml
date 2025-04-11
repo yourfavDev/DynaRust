@@ -3,37 +3,52 @@ name: Create Release
 on:
   push:
     tags:
-      - "*"  # Trigger for all tag pushes
+      - "*"  # Trigger on any tag pushes
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Check out the repository code
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      # Cache dependencies (example for Node.js projects)
+      - name: Cache Node Modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      # (Optional) Install dependencies if your workflow requires them
+      - name: Install Dependencies
+        if: exists('package-lock.json')
+        run: npm ci
+
+      # Validate and fix the tag name if it matches a 40-character hexadecimal string
       - id: validate_tag
         name: Validate and Fix Tag Name
         shell: bash
         run: |
-          # Extract the tag name from the ref (removing 'refs/tags/')
+          # Extract tag name from the Git reference
           TAG="${GITHUB_REF##*/}"
           echo "Original tag: ${TAG}"
-
-          # Check if the tag is exactly 40 hex characters (a commit SHA)
+          
+          # If tag is exactly 40 hex characters (looks like a commit SHA), adjust it
           if [[ "${TAG}" =~ ^[0-9a-f]{40}$ ]]; then
-            # If true, adjust the tag name.
-            # Here we prefix with 'v' and use the first 7 characters (as is common for abbreviated SHAs).
             NEW_TAG="v${TAG:0:7}"
             echo "Tag appears to be a commit SHA. Adjusting tag to: ${NEW_TAG}"
             TAG="${NEW_TAG}"
           else
             echo "Tag is valid: ${TAG}"
           fi
-
-          # Set the adjusted tag as an output for later steps
+          
+          # Set the adjusted tag as output for later steps
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+      # Create the GitHub release using the validated/adjusted tag
       - name: Create Release
         uses: actions/create-release@v1
         env:
