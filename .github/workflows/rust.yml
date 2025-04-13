@@ -1,9 +1,10 @@
-name: Create Release
+name: Create Release on Every Commit
 
 on:
   push:
-    tags:
-      - "*"  # Trigger on any tag pushes
+    # This will trigger on every commit push on any branch.
+    branches:
+      - '**'
 
 jobs:
   release:
@@ -12,11 +13,11 @@ jobs:
       contents: write
 
     steps:
-      # 1. Checkout the repository code
+      # 1. Checkout the repository code.
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Cache Cargo Registry
+      # 2. Cache Cargo Registry.
       - name: Cache Cargo Registry
         uses: actions/cache@v3
         with:
@@ -25,7 +26,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      # 3. Cache Cargo Git Repositories
+      # 3. Cache Cargo Git Repositories.
       - name: Cache Cargo Git Repositories
         uses: actions/cache@v3
         with:
@@ -34,7 +35,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-git-
 
-      # 4. Cache Build Artifacts (the target directory)
+      # 4. Cache Build Artifacts (the target directory).
       - name: Cache Build Output
         uses: actions/cache@v3
         with:
@@ -43,11 +44,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
-      # 5. Build your project with Cargo in release mode
+      # 5. Build your project with Cargo in release mode.
       - name: Build with Cargo
         run: cargo build --release
 
-      # 6. Locate the compiled binary
+      # 6. Locate the compiled binary.
       - name: Locate Binary File
         id: locate_binary
         run: |
@@ -61,40 +62,35 @@ jobs:
             echo "BINARY_PATH=${binary_path}" >> $GITHUB_ENV
           fi
 
-      # 7. Validate and fix the tag name if it matches a 40-character commit SHA
-      - id: validate_tag
-        name: Validate and Fix Tag Name
+      # 7. Determine the tag name.  
+      #    If the push already is a tag push, respect that tag.
+      #    Otherwise, use the first 7 characters of the commit SHA prefixed with 'v'.
+      - id: determine_tag
+        name: Determine Tag Name
         shell: bash
         run: |
-          # Extract the tag name from the Git ref (removing 'refs/tags/')
-          TAG="${GITHUB_REF##*/}"
-          echo "Original tag: ${TAG}"
-          
-          # If the tag is exactly 40 hex characters (i.e. a commit SHA),
-          # adjust the tag by prefixing it with 'v' and shortening it to 7 characters.
-          if [[ "${TAG}" =~ ^[0-9a-f]{40}$ ]]; then
-            NEW_TAG="v${TAG:0:7}"
-            echo "Tag appears to be a commit SHA. Adjusting tag to: ${NEW_TAG}"
-            TAG="${NEW_TAG}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF##*/}"
+            echo "Running on tag push. Using tag: ${TAG}"
           else
-            echo "Tag is valid: ${TAG}"
+            TAG="v${GITHUB_SHA:0:7}"
+            echo "Not a tag push. Using commit SHA as tag: ${TAG}"
           fi
-          # Set the (possibly adjusted) tag as output for later steps
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      # 8. Create the GitHub Release using the validated tag
+      # 8. Create a GitHub Release using the determined tag.
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ steps.validate_tag.outputs.tag }}
-          release_name: "Release ${{ steps.validate_tag.outputs.tag }}"
+          tag_name: ${{ steps.determine_tag.outputs.tag }}
+          release_name: "Release ${{ steps.determine_tag.outputs.tag }}"
           draft: false
           prerelease: false
 
-      # 9. Upload the built binary as a release asset
+      # 9. Upload the built binary as a release asset.
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
