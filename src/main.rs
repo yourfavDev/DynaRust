@@ -15,6 +15,7 @@ use storage::engine::{
     AppState, ClusterData, delete_value, get_value, get_table_store, join_cluster, put_value,
 };
 use storage::persistance::{cold_save, load_all_tables};
+use crate::storage::engine::{get_all_keys, get_multiple_keys};
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
 static APP_STATE: OnceCell<web::Data<AppState>> = OnceCell::new();
@@ -214,6 +215,11 @@ async fn main() -> std::io::Result<()> {
             .route("/store", web::get().to(|state: web::Data<AppState>| async move {
                 web::Json(state.store.lock().unwrap().clone())
             }))
+            // Endpoint to get all key names in a table.
+            .route("/{table}/keys", web::get().to(get_all_keys))
+            // Endpoint to retrieve multiple keys from a table (using a JSON body).
+            .route("/{table}/keys", web::post().to(get_multiple_keys))
+
     })
         .bind(bind_addr.as_str())?
         .run()

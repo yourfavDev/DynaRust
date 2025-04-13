@@ -267,3 +267,47 @@ pub async fn delete_value(
     let _results = join_all(tasks).await;
     HttpResponse::Ok().body("Key deleted from all replicas")
 }
+
+/// GET /{table}/keys
+/// Returns a JSON array with all key names in the given table.
+pub async fn get_all_keys(table: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
+    let table_name = table.into_inner();
+    let store = state.store.lock().unwrap();
+    if let Some(table_data) = store.get(&table_name) {
+        let keys: Vec<String> = table_data.keys().cloned().collect();
+        HttpResponse::Ok().json(keys)
+    } else {
+        HttpResponse::NotFound().body("Table not found")
+    }
+}
+
+/// Input for retrieving multiple keys.
+#[derive(Deserialize)]
+pub struct KeysRequest {
+    /// List of keys requested.
+    pub keys: Vec<String>,
+}
+
+/// POST /{table}/keys
+/// With a JSON body { "keys": ["key1", "key2", ...] },
+/// returns a JSON object mapping each found key to its stored value.
+pub async fn get_multiple_keys(
+    table: web::Path<String>,
+    keys_request: web::Json<KeysRequest>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let table_name = table.into_inner();
+    let requested_keys = keys_request.into_inner().keys;
+    let store = state.store.lock().unwrap();
+    if let Some(table_data) = store.get(&table_name) {
+        let mut result = HashMap::new();
+        for key in requested_keys {
+            if let Some(value) = table_data.get(&key) {
+                result.insert(key, value.clone());
+            }
+        }
+        HttpResponse::Ok().json(result)
+    } else {
+        HttpResponse::NotFound().body("Table not found")
+    }
+}
