@@ -5,21 +5,39 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// The local in-memory database state.
-/// Each partition key maps to a JSON object (a key–value map of attributes).
+/// The `store` maps table names to the table's key–value store.
+/// Each table's store maps a key to a JSON object (a key–value map of attributes).
 pub struct AppState {
-    pub store: Mutex<HashMap<String, HashMap<String, Value>>>,
+    /// Base directory under which each table (folder) resides.
+    /// Every table will be stored in a directory: `{base_dir}/{table}`.
+    pub base_dir: &'static str,
+    pub store: Mutex<HashMap<String, HashMap<String, HashMap<String, Value>>>>,
 }
-/// NEW: Handler to return the entire in-memory store as JSON.
-/// This endpoint is used by newly joined nodes to fetch
-/// the cold (persisted) state from a peer.
-pub async fn get_store(state: web::Data<AppState>) -> impl Responder {
+
+/// NEW: Handler to return the entire in-memory store for a table as JSON.
+/// This endpoint is used by newly joined nodes to fetch the cold (persisted)
+/// state from a peer.
+///
+/// The route is assumed to look like `GET /{table}/store`.
+pub async fn get_table_store(
+    table: web::Path<String>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let table_name = table.into_inner();
     let store = state.store.lock().unwrap();
-    HttpResponse::Ok().json(&*store)
+    if let Some(table_db) = store.get(&table_name) {
+        HttpResponse::Ok().json(table_db)
+    } else {
+        HttpResponse::NotFound().body("Table not found")
+    }
 }
+
 /// Shared cluster data, including dynamic membership and the list of alive nodes.
 #[derive(Clone)]
 pub struct ClusterData {
@@ -82,16 +100,18 @@ pub async fn join_cluster(
     HttpResponse::Ok().json(nodes_guard.clone())
 }
 
-/// GET handler for fetching a key's value.
+/// GET handler for fetching a key's value from a table.
 /// If the current node is responsible, it serves from local storage;
 /// otherwise, it forwards the request to the responsible node.
+///
+/// The route is assumed to look like: `GET /{table}/key/{key}`
 pub async fn get_value(
+    path: web::Path<(String, String)>, // (table, key)
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
-    key: web::Path<String>,
 ) -> impl Responder {
-    let key_val = key.into_inner();
+    let (table_name, key_val) = path.into_inner();
     let nodes = {
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
@@ -100,13 +120,17 @@ pub async fn get_value(
 
     if responsible == *current_addr.get_ref() {
         let store = data.store.lock().unwrap();
-        if let Some(value) = store.get(&key_val) {
-            HttpResponse::Ok().json(value)
+        if let Some(table_db) = store.get(&table_name) {
+            if let Some(value) = table_db.get(&key_val) {
+                HttpResponse::Ok().json(value)
+            } else {
+                HttpResponse::NotFound().body("Key not found")
+            }
         } else {
-            HttpResponse::NotFound().body("Key not found")
+            HttpResponse::NotFound().body("Table not found")
         }
     } else {
-        let url = format!("http://{}/key/{}", responsible, key_val);
+        let url = format!("http://{}/{}/key/{}", responsible, table_name, key_val);
         let client = reqwest::Client::new();
         match client.get(url).send().await {
             Ok(resp) => {
@@ -128,18 +152,17 @@ pub async fn get_value(
 }
 
 /// PUT handler: Inserts or updates a key–value pair with dynamic replication.
-/// The handler computes target nodes using `get_replication_nodes()` and then
-/// concurrently sends the write request to all targets.
 ///
-/// This version expects a JSON object (a map of attributes) in the request body.
+/// The endpoint expects a JSON object (a map of attributes) in the request body.
+/// The route is assumed to look like: `PUT /{table}/key/{key}`
 pub async fn put_value(
+    path: web::Path<(String, String)>, // (table, key)
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
-    key: web::Path<String>,
     body: web::Json<HashMap<String, Value>>,
 ) -> impl Responder {
-    let key_val = key.into_inner();
+    let (table_name, key_val) = path.into_inner();
     let nodes = {
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
@@ -150,71 +173,88 @@ pub async fn put_value(
     let client = reqwest::Client::new();
     let mut tasks = Vec::new();
 
-    // Extract the inner HashMap from the Json wrapper.
-    // This is the fix: use `.0.clone()` instead of `.clone().into_inner()`.
+    // Forward to all replication targets concurrently.
     for target in targets {
         let key_clone = key_val.clone();
+        let table_clone = table_name.clone();
         let body_clone = body.0.clone();
         let data_clone = data.clone();
 
         if target == *current_addr.get_ref() {
             let local_task = async move {
-                let mut store = data_clone.store.lock().unwrap();
-                store.insert(key_clone, body_clone);
+                {
+                    // Ensure the table exists (or create it).
+                    let mut store = data_clone.store.lock().unwrap();
+                    let table_db =
+                        store.entry(table_clone.clone()).or_insert_with(HashMap::new);
+                    table_db.insert(key_clone, body_clone);
+                }
+                // Create the folder for the table if it doesn't exist.
+                let table_folder = Path::new(data_clone.base_dir).join(&table_clone);
+                if let Err(e) = fs::create_dir_all(&table_folder) {
+                    eprintln!(
+                        "Warning: could not create directory {:?}: {}",
+                        table_folder, e
+                    );
+                }
                 Ok::<String, reqwest::Error>(format!("Local write on {}", target))
             };
             tasks.push(tokio::spawn(local_task));
         } else {
-            let url = format!("http://{}/key/{}", target, key_val);
+            let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
             let forward_task = async move {
-                let _resp =
-                    client_clone.put(&url).json(&body_clone).send().await?;
+                let _resp = client_clone.put(&url).json(&body_clone).send().await?;
                 Ok(format!("Forwarded to {}", target))
             };
             tasks.push(tokio::spawn(forward_task));
         }
     }
+
     let _results = join_all(tasks).await;
     HttpResponse::Created().body("Key stored with dynamic replication")
 }
 
 /// DELETE handler: Broadcasts deletion to all replicas that hold the key.
-/// The handler concurrently sends a deletion request to every target.
+/// The route is assumed to look like: `DELETE /{table}/key/{key}`
 pub async fn delete_value(
+    path: web::Path<(String, String)>, // (table, key)
     data: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
-    key: web::Path<String>,
 ) -> impl Responder {
-    let key_val = key.into_inner();
+    let (table_name, key_val) = path.into_inner();
     let nodes = {
         let guard = cluster_data.nodes.lock().unwrap();
         guard.clone()
     };
     let replication_factor = nodes.len();
     let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
-
     let client = reqwest::Client::new();
     let mut tasks =
         Vec::<tokio::task::JoinHandle<Result<String, reqwest::Error>>>::new();
 
     for target in targets {
         let key_clone = key_val.clone();
-        let data_clone = data.clone();
+        let table_clone = table_name.clone();
 
         if target == *current_addr.get_ref() {
+            let data_clone = data.clone();
             let local_task = async move {
                 let mut store = data_clone.store.lock().unwrap();
-                let result = store.remove(&key_clone);
-                match result {
-                    Some(_) => Ok(format!("Local delete on {}", target)),
-                    None => Ok(format!("Key not found on {}", target)),
+                if let Some(table_db) = store.get_mut(&table_clone) {
+                    let result = match table_db.remove(&key_clone) {
+                        Some(_) => format!("Local delete on {}", target),
+                        None => format!("Key not found on {}", target),
+                    };
+                    Ok(result)
+                } else {
+                    Ok(format!("Table not found on {}", target))
                 }
             };
             tasks.push(tokio::spawn(local_task));
         } else {
-            let url = format!("http://{}/key/{}", target, key_val);
+            let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
             let forward_task = async move {
                 let _resp = client_clone.delete(&url).send().await?;
@@ -223,6 +263,7 @@ pub async fn delete_value(
             tasks.push(tokio::spawn(forward_task));
         }
     }
+
     let _results = join_all(tasks).await;
     HttpResponse::Ok().body("Key deleted from all replicas")
 }
