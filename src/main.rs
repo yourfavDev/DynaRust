@@ -2,60 +2,61 @@ mod storage;
 mod network;
 mod tokenizer;
 
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpServer, Responder};
 use once_cell::sync::OnceCell;
 use reqwest;
-use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::env;
 use std::process;
-use std::sync::Mutex;
-
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use storage::engine::{
     AppState, ClusterData, delete_value, get_value, get_table_store, join_cluster, put_value,
+    get_all_keys, get_multiple_keys, NodeInfo, NodeStatus, current_timestamp,
+    VersionedValue,
 };
 use storage::persistance::{cold_save, load_all_tables};
-use crate::storage::engine::{get_all_keys, get_multiple_keys};
+use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
 static APP_STATE: OnceCell<web::Data<AppState>> = OnceCell::new();
 
 /// Merge the remote state for a given table into the local state.
-/// For each key (i.e. partition) from the remote state:
-/// - If the key already exists, update its attributes.
-/// - Otherwise, insert the new key with its attributes.
 fn merge_table_state(
-    local: &mut HashMap<String, HashMap<String, Value>>,
-    remote: HashMap<String, HashMap<String, Value>>,
+    local: &mut HashMap<String, VersionedValue>,
+    remote: HashMap<String, VersionedValue>,
 ) {
-    for (key, remote_partition) in remote {
+    for (key, remote_val) in remote {
         local
             .entry(key)
-            .and_modify(|local_partition| {
-                for (attr, value) in remote_partition.iter() {
-                    local_partition.insert(attr.clone(), value.clone());
+            .and_modify(|local_val| {
+                if remote_val.version > local_val.version {
+                    *local_val = remote_val.clone();
                 }
             })
-            .or_insert(remote_partition);
+            .or_insert(remote_val);
     }
 }
 
 /// Merge the entire global remote store into the local store.
-/// Both stores have the type:
-/// HashMap<table_name, HashMap<partition_key, HashMap<attribute, Value>>>
 fn merge_global_store(
-    local: &mut HashMap<String, HashMap<String, HashMap<String, Value>>>,
-    remote: HashMap<String, HashMap<String, HashMap<String, Value>>>,
+    local: &mut HashMap<String, HashMap<String, VersionedValue>>,
+    remote: HashMap<String, HashMap<String, VersionedValue>>,
 ) {
-    for (table_name, remote_table) in remote {
+    for (table, remote_table) in remote {
         local
-            .entry(table_name.clone())
+            .entry(table.clone())
             .and_modify(|local_table| {
-                // Clone remote_table so we don't move it
                 merge_table_state(local_table, remote_table.clone());
             })
             .or_insert(remote_table);
     }
+}
+
+async fn get_global_store(state: web::Data<AppState>) -> impl Responder {
+    let store = state.store.read().await;
+    web::Json(store.clone())
 }
 
 #[actix_web::main]
@@ -63,10 +64,7 @@ async fn main() -> std::io::Result<()> {
     // Usage: <program> <current_node_address> [join_node_address]
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!(
-            "Usage: {} <current_node_address> [join_node_address]",
-            args[0]
-        );
+        eprintln!("Usage: {} <current_node_address> [join_node_address]", args[0]);
         process::exit(1);
     }
     let current_node = args[1].clone();
@@ -74,30 +72,27 @@ async fn main() -> std::io::Result<()> {
     let bind_addr = current_node.clone();
 
     // Initialize the local in‑memory multi‑table key–value store.
-    // Each table name maps to a key–value store:
-    //    table_name -> (key -> attributes)
     let state = web::Data::new(AppState {
-        // Specify a base directory for table folders.
         base_dir: "./data",
-        store: Mutex::new(HashMap::new()),
+        store: RwLock::new(HashMap::new()),
+        write_quorum: 0,
+        read_quorum: 0,
     });
-    // Set the global APP_STATE pointer.
     let _ = APP_STATE.set(state.clone());
 
-    // Load local cold storage from disk by enumerating each table folder.
-    match load_all_tables(&state) {
+    // Load cold storage (snapshot + WAL replay) from disk.
+    match load_all_tables(&state).await {
         Ok(_) => println!("Cold storage loaded"),
         Err(e) => eprintln!("Error loading cold storage: {}", e),
     }
 
     // (Optionally) Ensure the default table exists in memory.
     {
-        let default_table = "default".to_string();
-        let mut store = state.store.lock().unwrap();
-        store.entry(default_table).or_insert(HashMap::new());
+        let mut store = state.store.write().await;
+        store.entry("default".to_string()).or_insert(HashMap::new());
     }
 
-    // If a join node is provided, join its cluster and pull its global state.
+    // If a join node is provided, join its cluster and merge its global state.
     if args.len() >= 3 {
         let join_node = args[2].clone();
 
@@ -106,46 +101,38 @@ async fn main() -> std::io::Result<()> {
         let join_url = format!("http://{}/join", join_node);
         match client
             .post(&join_url)
-            .json(&serde_json::json!({ "node": current_node }))
+            .json(&json!({ "node": current_node }))
             .send()
             .await
         {
             Ok(response) => {
                 if response.status().is_success() {
-                    if let Ok(nodes) = response.json::<Vec<String>>().await {
+                    if let Ok(nodes) = response.json::<HashMap<String, NodeInfo>>().await {
                         println!("Joined cluster: {:?}", nodes);
                     }
                 } else {
-                    println!(
-                        "Failed to join cluster (status = {})",
-                        response.status()
-                    );
+                    println!("Failed to join cluster (status = {})", response.status());
                 }
             }
             Err(e) => println!("Error joining cluster: {}", e),
         }
 
         // Pull the remote state for all tables.
-        // This requires that the remote node exposes a global state endpoint at GET /store.
         let store_url = format!("http://{}/store", join_node);
-        let client = reqwest::Client::new();
         match client.get(&store_url).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let remote_store: HashMap<
-                        String,
-                        HashMap<String, HashMap<String, Value>>,
-                    > = resp.json().await.unwrap_or_else(|e| {
-                        eprintln!("Failed to parse global cold storage: {}", e);
-                        HashMap::new()
-                    });
+                    let remote_store = resp
+                        .json::<HashMap<String, HashMap<String, VersionedValue>>>()
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("Failed to parse global cold storage: {}", e);
+                            HashMap::new()
+                        });
                     {
-                        let mut store = state.store.lock().unwrap();
+                        let mut store = state.store.write().await;
                         merge_global_store(&mut store, remote_store);
-                        println!(
-                            "Merged global cold storage from {}: {:?}",
-                            join_node, *store
-                        );
+                        println!("Merged global cold storage: {:?}", *store);
                     }
                 } else {
                     eprintln!(
@@ -158,33 +145,32 @@ async fn main() -> std::io::Result<()> {
             Err(e) => {
                 eprintln!(
                     "Error fetching global cold storage from {}: {}",
-                    join_node, e,
+                    join_node, e
                 );
             }
         }
     }
 
     // Spawn the periodic cold save task.
-    tokio::spawn({
-        let state = state.clone();
-        async move {
-            cold_save(state, 30).await;
-        }
-    });
+    tokio::spawn(cold_save(state.clone(), 30));
 
     // Initialize cluster data with dynamic membership.
+    let mut initial_nodes = HashMap::new();
+    initial_nodes.insert(
+        current_node.clone(),
+        NodeInfo {
+            status: NodeStatus::Active,
+            last_heartbeat: current_timestamp(),
+        },
+    );
     let cluster_data = web::Data::new(ClusterData {
-        nodes: std::sync::Arc::new(Mutex::new(vec![current_node.clone()])),
+        nodes: Arc::new(RwLock::new(initial_nodes)),
     });
 
-    // Spawn the membership synchronization background task.
-    let cluster_data_clone = cluster_data.clone();
-    let current_node_clone = current_node.clone();
-    tokio::spawn(network::broadcaster::membership_sync(
-        cluster_data_clone,
-        current_node_clone,
-        60,
-    ));
+    // Spawn the membership synchronization (heartbeat) task.
+    let cluster_clone = cluster_data.clone();
+    let current_clone = current_node.clone();
+    tokio::spawn(membership_sync(cluster_clone, current_clone, 60));
 
     println!("Starting distributed DB engine at http://{}", current_node);
 
@@ -194,32 +180,22 @@ async fn main() -> std::io::Result<()> {
             .app_data(state.clone())
             .app_data(cluster_data.clone())
             .app_data(web::Data::new(current_node.clone()))
-            // Endpoint to join the cluster.
+            // Cluster management endpoints.
             .route("/join", web::post().to(join_cluster))
-            // Endpoints for updating/fetching membership.
-            .route(
-                "/membership",
-                web::get().to(network::broadcaster::get_membership),
-            )
-            .route(
-                "/update_membership",
-                web::post().to(network::broadcaster::update_membership),
-            )
-            // Key endpoints with multi‑table support: the table name is part of the URL.
+            .route("/membership", web::get().to(get_membership))
+            .route("/update_membership", web::post().to(update_membership))
+            .route("/heartbeat", web::get().to(heartbeat))
+            // Key–value endpoints with multi‑table support.
             .route("/{table}/key/{key}", web::get().to(get_value))
             .route("/{table}/key/{key}", web::put().to(put_value))
             .route("/{table}/key/{key}", web::delete().to(delete_value))
             // Endpoint to fetch a table’s entire in‑memory store.
             .route("/{table}/store", web::get().to(get_table_store))
             // Global endpoint returning the entire in‑memory store.
-            .route("/store", web::get().to(|state: web::Data<AppState>| async move {
-                web::Json(state.store.lock().unwrap().clone())
-            }))
-            // Endpoint to get all key names in a table.
+            .route("/store", web::get().to(get_global_store))
+            // Endpoints to get keys from a table.
             .route("/{table}/keys", web::get().to(get_all_keys))
-            // Endpoint to retrieve multiple keys from a table (using a JSON body).
             .route("/{table}/keys", web::post().to(get_multiple_keys))
-
     })
         .bind(bind_addr.as_str())?
         .run()

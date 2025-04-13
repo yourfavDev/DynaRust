@@ -13,4 +13,5 @@ serde = { version = "1.0.219", features = ["derive"] }
 base64 = "0.21"
 once_cell = "1.21.3"
 regex = "1.11.1"
+futures = "0.3.31"
 

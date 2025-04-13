@@ -1,51 +1,88 @@
 use actix_web::{web, HttpResponse, Responder};
-use futures_util::future::join_all;
-use reqwest;
-use serde::Deserialize;
-use serde_json::Value;
+use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::collections::hash_map::DefaultHasher;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 
-/// The local in-memory database state.
-/// The `store` maps table names to the table's key–value store.
-/// Each table's store maps a key to a JSON object (a key–value map of attributes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionedValue {
+    pub value: HashMap<String, Value>,
+    pub version: u64,
+    pub timestamp: u128,
+}
+
+impl VersionedValue {
+    pub fn new(value: HashMap<String, Value>) -> Self {
+        let ts = current_timestamp();
+        Self {
+            value,
+            version: 1,
+            timestamp: ts,
+        }
+    }
+
+    pub fn update(&mut self, value: HashMap<String, Value>) {
+        self.value = value;
+        self.version += 1;
+        self.timestamp = current_timestamp();
+    }
+}
+
+pub fn current_timestamp() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis()
+}
+
+/// The local in‑memory database state.
+/// The `store` maps table names to the table’s key–value store.
+/// Each table’s store maps a key to a VersionedValue.
 pub struct AppState {
     /// Base directory under which each table (folder) resides.
     /// Every table will be stored in a directory: `{base_dir}/{table}`.
     pub base_dir: &'static str,
-    pub store: Mutex<HashMap<String, HashMap<String, HashMap<String, Value>>>>,
+    pub store: RwLock<HashMap<String, HashMap<String, VersionedValue>>>,
+    // The quorum thresholds still remain for consistency checking.
+    pub write_quorum: usize,
+    pub read_quorum: usize,
 }
 
-/// NEW: Handler to return the entire in-memory store for a table as JSON.
-/// This endpoint is used by newly joined nodes to fetch the cold (persisted)
-/// state from a peer.
-///
-/// The route is assumed to look like `GET /{table}/store`.
-pub async fn get_table_store(
-    table: web::Path<String>,
-    state: web::Data<AppState>,
-) -> impl Responder {
-    let table_name = table.into_inner();
-    let store = state.store.lock().unwrap();
-    if let Some(table_db) = store.get(&table_name) {
-        HttpResponse::Ok().json(table_db)
-    } else {
-        HttpResponse::NotFound().body("Table not found")
-    }
+/// Shared cluster data, including dynamic membership and node statuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NodeStatus {
+    Active,
+    Suspect,
+    Down,
+    Leaving,
 }
 
-/// Shared cluster data, including dynamic membership and the list of alive nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeInfo {
+    pub status: NodeStatus,
+    pub last_heartbeat: u128,
+}
+
 #[derive(Clone)]
 pub struct ClusterData {
-    /// Dynamically maintained cluster membership list.
-    pub nodes: Arc<Mutex<Vec<String>>>,
+    // Mapping: node address -> NodeInfo
+    pub nodes: std::sync::Arc<RwLock<HashMap<String, NodeInfo>>>,
 }
 
-/// Calculates the "responsible" node for a given key using a simple hash modulo algorithm.
+/// Utility: Extract active nodes from the cluster membership map.
+fn get_active_nodes(nodes: &HashMap<String, NodeInfo>) -> Vec<String> {
+    nodes
+        .iter()
+        .filter(|(_, info)| info.status == NodeStatus::Active)
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// Calculates the “responsible” node for a given key using a simple hash modulo.
 fn get_responsible_node(key: &str, nodes: &[String]) -> String {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -54,13 +91,11 @@ fn get_responsible_node(key: &str, nodes: &[String]) -> String {
     nodes[index].clone()
 }
 
-/// Computes replication targets for a given key. The primary is chosen via a hash modulo,
-/// and backup nodes are chosen in a circular fashion.
-fn get_replication_nodes(
-    key: &str,
-    nodes: &[String],
-    replication_factor: usize,
-) -> Vec<String> {
+/// Computes replication targets for a given key.
+/// In this implementation we use all active nodes.
+/// (For a more elaborate scheme you might rotate the order.)
+fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize) -> Vec<String> {
+    // Here we use the primary index calculation to determine an ordering.
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     let hash = hasher.finish();
@@ -69,8 +104,6 @@ fn get_replication_nodes(
 
     let mut targets = Vec::with_capacity(replication_factor);
     targets.push(nodes[primary_index].clone());
-
-    // Choose additional targets in a circular fashion.
     let mut i = 1;
     while targets.len() < replication_factor && i < total_nodes {
         let idx = (primary_index + i) % total_nodes;
@@ -80,9 +113,21 @@ fn get_replication_nodes(
     targets
 }
 
+/// Handler to return the entire in‑memory store for a table as JSON.
+pub async fn get_table_store(
+    table: web::Path<String>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let table_name = table.into_inner();
+    let store = state.store.read().await;
+    if let Some(table_db) = store.get(&table_name) {
+        HttpResponse::Ok().json(table_db)
+    } else {
+        HttpResponse::NotFound().json(json!({"error": "Table not found"}))
+    }
+}
+
 /// Handler for a node joining the cluster.
-/// A POST to `/join` with a JSON body `{ "node": "address" }` adds the node
-/// to the membership list (if not already present) and returns the updated list.
 #[derive(Deserialize)]
 pub struct JoinRequest {
     node: String,
@@ -93,191 +138,276 @@ pub async fn join_cluster(
     request: web::Json<JoinRequest>,
 ) -> impl Responder {
     let new_node = request.node.clone();
-    let mut nodes_guard = cluster.nodes.lock().unwrap();
-    if !nodes_guard.contains(&new_node) {
-        nodes_guard.push(new_node);
+    let mut nodes_guard = cluster.nodes.write().await;
+    if !nodes_guard.contains_key(&new_node) {
+        nodes_guard.insert(
+            new_node.clone(),
+            NodeInfo {
+                status: NodeStatus::Active,
+                last_heartbeat: current_timestamp(),
+            },
+        );
     }
     HttpResponse::Ok().json(nodes_guard.clone())
 }
 
-/// GET handler for fetching a key's value from a table.
-/// If the current node is responsible, it serves from local storage;
-/// otherwise, it forwards the request to the responsible node.
-///
-/// The route is assumed to look like: `GET /{table}/key/{key}`
+/// GET handler for quorum reading a key's value.
+/// This function requests the key from all active nodes
+/// and then selects the highest-versioned result.
 pub async fn get_value(
     path: web::Path<(String, String)>, // (table, key)
-    data: web::Data<AppState>,
+    state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
-    let nodes = {
-        let guard = cluster_data.nodes.lock().unwrap();
-        guard.clone()
-    };
-    let responsible = get_responsible_node(&key_val, &nodes);
 
-    if responsible == *current_addr.get_ref() {
-        let store = data.store.lock().unwrap();
-        if let Some(table_db) = store.get(&table_name) {
-            if let Some(value) = table_db.get(&key_val) {
-                HttpResponse::Ok().json(value)
-            } else {
-                HttpResponse::NotFound().body("Key not found")
-            }
+    // Retrieve the active nodes.
+    let cluster_guard = cluster_data.nodes.read().await;
+    let active_nodes = get_active_nodes(&*cluster_guard);
+    drop(cluster_guard);
+
+    // Use all active nodes as the replication factor.
+    let replication_factor = active_nodes.len();
+    let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
+
+    let client = reqwest::Client::new();
+    let mut futures_vec: Vec<BoxFuture<'static, Result<Option<VersionedValue>, String>>> =
+        Vec::new();
+
+    // Iterate over targets by value.
+    for target in targets.into_iter() {
+        if target == *current_addr.get_ref() {
+            let state_clone = state.clone();
+            let table_name_clone = table_name.clone();
+            let key_clone = key_val.clone();
+            let fut: BoxFuture<'static, Result<Option<VersionedValue>, String>> =
+                Box::pin(async move {
+                    let store = state_clone.store.read().await;
+                    let result = store
+                        .get(&table_name_clone)
+                        .and_then(|table| table.get(&key_clone))
+                        .cloned();
+                    Ok(result)
+                });
+            futures_vec.push(fut);
         } else {
-            HttpResponse::NotFound().body("Table not found")
-        }
-    } else {
-        let url = format!("http://{}/{}/key/{}", responsible, table_name, key_val);
-        let client = reqwest::Client::new();
-        match client.get(url).send().await {
-            Ok(resp) => {
-                let reqwest_status = resp.status();
-                let text = resp
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "Error reading response".to_string());
-                let actix_status = actix_web::http::StatusCode::from_u16(
-                    reqwest_status.as_u16(),
-                )
-                    .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
-                HttpResponse::build(actix_status).body(text)
-            }
-            Err(e) => HttpResponse::InternalServerError()
-                .body(format!("Error forwarding GET request: {}", e)),
+            let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
+            let client_inner = client.clone();
+            let fut: BoxFuture<'static, Result<Option<VersionedValue>, String>> =
+                Box::pin(async move {
+                    match client_inner
+                        .get(&url)
+                        .timeout(std::time::Duration::from_secs(3))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status().is_success() {
+                                match resp.json::<VersionedValue>().await {
+                                    Ok(v) => Ok(Some(v)),
+                                    Err(e) => Err(format!(
+                                        "Error parsing JSON from {}: {}",
+                                        target, e
+                                    )),
+                                }
+                            } else {
+                                Err(format!("Error from {}: {}", target, resp.status()))
+                            }
+                        }
+                        Err(e) => Err(format!("Request error to {}: {}", target, e)),
+                    }
+                });
+            futures_vec.push(fut);
         }
     }
+
+    let results = futures_util::future::join_all(futures_vec).await;
+    let mut valid_results = Vec::new();
+    for res in results {
+        if let Ok(Some(val)) = res {
+            valid_results.push(val);
+        } else if let Err(err) = res {
+            println!("Error during quorum read: {}", err);
+        }
+    }
+
+    if valid_results.len() < state.read_quorum {
+        return HttpResponse::InternalServerError()
+            .json(json!({"error": "Read quorum not achieved"}));
+    }
+
+    // Pick the value with the highest version.
+    let latest = valid_results
+        .into_iter()
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .unwrap();
+    HttpResponse::Ok().json(latest)
 }
 
-/// PUT handler: Inserts or updates a key–value pair with dynamic replication.
-///
-/// The endpoint expects a JSON object (a map of attributes) in the request body.
-/// The route is assumed to look like: `PUT /{table}/key/{key}`
+/// PUT handler: Inserts or updates a key–value pair and replicates to all active nodes.
 pub async fn put_value(
     path: web::Path<(String, String)>, // (table, key)
-    data: web::Data<AppState>,
+    state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     body: web::Json<HashMap<String, Value>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
-    let nodes = {
-        let guard = cluster_data.nodes.lock().unwrap();
-        guard.clone()
+
+    // Perform a local update.
+    let new_value = {
+        let mut store = state.store.write().await;
+        let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
+        if let Some(existing) = table.get_mut(&key_val) {
+            existing.update(body.0.clone());
+            existing.clone()
+        } else {
+            let v = VersionedValue::new(body.0.clone());
+            table.insert(key_val.clone(), v.clone());
+            v
+        }
     };
-    let replication_factor = nodes.len();
-    let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
+
+    // Retrieve all active nodes.
+    let cluster_guard = cluster_data.nodes.read().await;
+    let active_nodes = get_active_nodes(&*cluster_guard);
+    drop(cluster_guard);
+
+    // Use all active nodes as the replication factor.
+    let replication_factor = active_nodes.len();
+    let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
 
     let client = reqwest::Client::new();
-    let mut tasks = Vec::new();
+    let payload = serde_json::to_value(&new_value).unwrap();
+    let mut ack_futures: Vec<BoxFuture<'static, Result<(), String>>> = Vec::new();
 
-    // Forward to all replication targets concurrently.
-    for target in targets {
-        let key_clone = key_val.clone();
-        let table_clone = table_name.clone();
-        let body_clone = body.0.clone();
-        let data_clone = data.clone();
-
+    // Iterate by value.
+    for target in targets.clone().into_iter() {
         if target == *current_addr.get_ref() {
-            let local_task = async move {
-                {
-                    // Ensure the table exists (or create it).
-                    let mut store = data_clone.store.lock().unwrap();
-                    let table_db =
-                        store.entry(table_clone.clone()).or_insert_with(HashMap::new);
-                    table_db.insert(key_clone, body_clone);
-                }
-                // Create the folder for the table if it doesn't exist.
-                let table_folder = Path::new(data_clone.base_dir).join(&table_clone);
-                if let Err(e) = fs::create_dir_all(&table_folder) {
-                    eprintln!(
-                        "Warning: could not create directory {:?}: {}",
-                        table_folder, e
-                    );
-                }
-                Ok::<String, reqwest::Error>(format!("Local write on {}", target))
-            };
-            tasks.push(tokio::spawn(local_task));
+            ack_futures.push(Box::pin(async { Ok(()) }));
         } else {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
-            let client_clone = client.clone();
-            let forward_task = async move {
-                let _resp = client_clone.put(&url).json(&body_clone).send().await?;
-                Ok(format!("Forwarded to {}", target))
-            };
-            tasks.push(tokio::spawn(forward_task));
+            let client_inner = client.clone();
+            // Clone the payload for each iteration.
+            let payload = payload.clone();
+            let fut: BoxFuture<'static, Result<(), String>> = Box::pin(async move {
+                match client_inner
+                    .put(&url)
+                    .json(&payload)
+                    .timeout(std::time::Duration::from_secs(3))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            Ok(())
+                        } else {
+                            Err(format!("Failed at {}: {}", target, resp.status()))
+                        }
+                    }
+                    Err(e) => Err(format!("Request error to {}: {}", target, e)),
+                }
+            });
+            ack_futures.push(fut);
         }
     }
 
-    let _results = join_all(tasks).await;
-    HttpResponse::Created().body("Key stored with dynamic replication")
+    let results = futures_util::future::join_all(ack_futures).await;
+    let success_count = results.into_iter().filter(|res| res.is_ok()).count();
+    let total_targets = targets.len();
+    // Require that every target acknowledges.
+    if success_count != total_targets {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Write quorum not achieved, only got {} out of {} acks", success_count, total_targets)
+        }));
+    }
+    HttpResponse::Created().json(new_value)
 }
 
-/// DELETE handler: Broadcasts deletion to all replicas that hold the key.
-/// The route is assumed to look like: `DELETE /{table}/key/{key}`
+/// DELETE handler: Removes a key and replicates the deletion to all active nodes.
 pub async fn delete_value(
     path: web::Path<(String, String)>, // (table, key)
-    data: web::Data<AppState>,
+    state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
-    let nodes = {
-        let guard = cluster_data.nodes.lock().unwrap();
-        guard.clone()
+
+    let local_status = {
+        let mut store = state.store.write().await;
+        if let Some(table) = store.get_mut(&table_name) {
+            if table.remove(&key_val).is_some() {
+                "Deleted locally"
+            } else {
+                "Key not found locally"
+            }
+        } else {
+            "Table not found locally"
+        }
+            .to_string()
     };
-    let replication_factor = nodes.len();
-    let targets = get_replication_nodes(&key_val, &nodes, replication_factor);
+
+    let cluster_guard = cluster_data.nodes.read().await;
+    let active_nodes = get_active_nodes(&*cluster_guard);
+    drop(cluster_guard);
+
+    let replication_factor = active_nodes.len();
+    let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
     let client = reqwest::Client::new();
-    let mut tasks =
-        Vec::<tokio::task::JoinHandle<Result<String, reqwest::Error>>>::new();
+    let mut ack_futures: Vec<BoxFuture<'static, Result<(), String>>> = Vec::new();
 
-    for target in targets {
-        let key_clone = key_val.clone();
-        let table_clone = table_name.clone();
-
+    for target in targets.clone().into_iter() {
         if target == *current_addr.get_ref() {
-            let data_clone = data.clone();
-            let local_task = async move {
-                let mut store = data_clone.store.lock().unwrap();
-                if let Some(table_db) = store.get_mut(&table_clone) {
-                    let result = match table_db.remove(&key_clone) {
-                        Some(_) => format!("Local delete on {}", target),
-                        None => format!("Key not found on {}", target),
-                    };
-                    Ok(result)
-                } else {
-                    Ok(format!("Table not found on {}", target))
-                }
-            };
-            tasks.push(tokio::spawn(local_task));
+            ack_futures.push(Box::pin(async { Ok(()) }));
         } else {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
-            let client_clone = client.clone();
-            let forward_task = async move {
-                let _resp = client_clone.delete(&url).send().await?;
-                Ok(format!("Forwarded delete to {}", target))
-            };
-            tasks.push(tokio::spawn(forward_task));
+            let client_inner = client.clone();
+            let fut: BoxFuture<'static, Result<(), String>> = Box::pin(async move {
+                match client_inner
+                    .delete(&url)
+                    .timeout(std::time::Duration::from_secs(3))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            Ok(())
+                        } else {
+                            Err(format!("Failed delete at {}: {}", target, resp.status()))
+                        }
+                    }
+                    Err(e) => Err(format!("Request error to {}: {}", target, e)),
+                }
+            });
+            ack_futures.push(fut);
         }
     }
 
-    let _results = join_all(tasks).await;
-    HttpResponse::Ok().body("Key deleted from all replicas")
+    let results = futures_util::future::join_all(ack_futures).await;
+    let success_count = results.into_iter().filter(|res| res.is_ok()).count();
+    let total_targets = targets.len();
+    if success_count != total_targets {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Delete quorum not achieved, only got {} out of {} acks", success_count, total_targets)
+        }));
+    }
+    HttpResponse::Ok().json(json!({ "message": local_status }))
 }
 
 /// GET /{table}/keys
 /// Returns a JSON array with all key names in the given table.
-pub async fn get_all_keys(table: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
+pub async fn get_all_keys(
+    table: web::Path<String>,
+    state: web::Data<AppState>,
+) -> impl Responder {
     let table_name = table.into_inner();
-    let store = state.store.lock().unwrap();
-    if let Some(table_data) = store.get(&table_name) {
-        let keys: Vec<String> = table_data.keys().cloned().collect();
+    let store = state.store.read().await;
+    if let Some(table_db) = store.get(&table_name) {
+        let keys: Vec<String> = table_db.keys().cloned().collect();
         HttpResponse::Ok().json(keys)
     } else {
-        HttpResponse::NotFound().body("Table not found")
+        HttpResponse::NotFound().json(json!({"error": "Table not found"}))
     }
 }
 
@@ -289,8 +419,7 @@ pub struct KeysRequest {
 }
 
 /// POST /{table}/keys
-/// With a JSON body { "keys": ["key1", "key2", ...] },
-/// returns a JSON object mapping each found key to its stored value.
+/// Returns a JSON object mapping each found key to its stored VersionedValue.
 pub async fn get_multiple_keys(
     table: web::Path<String>,
     keys_request: web::Json<KeysRequest>,
@@ -298,9 +427,9 @@ pub async fn get_multiple_keys(
 ) -> impl Responder {
     let table_name = table.into_inner();
     let requested_keys = keys_request.into_inner().keys;
-    let store = state.store.lock().unwrap();
+    let store = state.store.read().await;
     if let Some(table_data) = store.get(&table_name) {
-        let mut result = HashMap::new();
+        let mut result: HashMap<String, VersionedValue> = HashMap::new();
         for key in requested_keys {
             if let Some(value) = table_data.get(&key) {
                 result.insert(key, value.clone());
@@ -308,6 +437,6 @@ pub async fn get_multiple_keys(
         }
         HttpResponse::Ok().json(result)
     } else {
-        HttpResponse::NotFound().body("Table not found")
+        HttpResponse::NotFound().json(json!({"error": "Table not found"}))
     }
 }
