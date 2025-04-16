@@ -6,6 +6,15 @@ Think of it as a shared dictionary 📚 spread across multiple computers 💻↔
 
 With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections** 🔥—and you can increase capacity even further simply by adding more nodes to your cluster!
 
+| **Metric**             | **Value**                                     |
+|------------------------|-----------------------------------------------|
+| Container Resources    | 0.25 vCPU, 0.5 GB RAM                           |
+| Data Storage           | 100,000 records (50-word lorem ipsum JSON/record)      |
+| Memory Consumption     | 350 MB                                        |
+| Cluster Startup        | < 1 sec                                       |
+| GET Operation Latency  | ~20 ms                                        |
+
+### While inserting ~300 rows/sec we had a SSE client open on a key flawlessly getting live updates in <5 ms (Cheapest AWS EC2)
 ---
 
 ## 🛜 Main node running:
