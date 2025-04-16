@@ -6,6 +6,8 @@ Think of it as a shared dictionary 📚 spread across multiple computers 💻↔
 
 With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections** 🔥—and you can increase capacity even further simply by adding more nodes to your cluster!
 
+---
+## Performance
 | **Metric**             | **Value**                                     |
 |------------------------|-----------------------------------------------|
 | Container Resources    | 0.25 vCPU, 0.5 GB RAM                           |
