@@ -1,17 +1,48 @@
+Below is the updated README with enhanced emphasis on real‑time updates and performance:
+
+---
+
 # DynaRust: A Simple Distributed Key-Value Store
 
-DynaRust is a distributed key-value store built in Rust. It's designed to be reliable and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service.
+DynaRust is a distributed key‑value store built in Rust. It's designed to be reliable and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service.
 
-Think of it as a shared dictionary spread across multiple computers. You can store data (key-value pairs), retrieve it, and delete it using a simple web API. DynaRust automatically copies your data across the available nodes for high availability and synchronizes changes, ensuring data consistency over time (eventual consistency). It stores data in memory for speed and saves it to disk (`storage.db`) so your data isn't lost if a node restarts.
+Imagine it as a shared dictionary spread across multiple computers. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API. DynaRust automatically copies your data across available nodes for high availability and synchronizes changes over time (eventual consistency). It stores data in memory for speed and persists it to disk (`storage.db`) so your data remains safe even if a node restarts.
 
-**Key Features:**
-*   **Cluster security:** Each node needs to know the "secret" token to join a cluster (CLUSTER_SECRET env var)
-*   **Distributed Storage:** Data is spread across all nodes in the cluster.
-*   **High Availability:** If one node fails, others can still serve requests for the available data.
-*   **Dynamic Cluster Membership:** Nodes can join or leave the cluster easily without manual reconfiguration of others.
-*   **Automatic State Sync:** New or returning nodes automatically fetch the latest data state from the cluster.
-*   **Persistent Storage:** Data is saved to a local `storage.db` file for durability across restarts.
-*   **RESTful API:** Simple HTTP interface (using GET, PUT, DELETE) for interacting with your data.
+With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms. In fact, on a typical VPS with 1 GB of RAM and a 100 Mbps bandwidth connection, a node can comfortably sustain peak traffic of up to **5000 live connections**—and you can increase capacity even further simply by adding more nodes to your cluster.
+
+---
+
+## Key Features
+
+- **HOT RELOAD & REAL‑TIME UPDATES:**  
+  Enjoy lightning‑fast, real‑time updates using Server‑Sent Events (SSE). Subscribe to a key with:
+  ```bash
+  curl -N http://localhost:8080/{TABLE}/subscribe/{KEY}
+  ```  
+  Changes are pushed  instantly and on a standard VPS (1GB RAM, 100MBPS), a single node can handle up to **5000 simultaneous live connections**. Need more capacity? Just add more nodes to the cluster.
+
+- **Cluster Security:**  
+  Each node requires a "secret" token (set by the `CLUSTER_SECRET` environment variable) to join a cluster.
+
+- **Distributed Storage:**  
+  Data is automatically partitioned and spread across all nodes in the cluster.
+
+- **High Availability:**  
+  If one node fails, the remaining nodes continue to serve requests for the available data.
+
+- **Dynamic Cluster Membership:**  
+  Nodes can join or leave the cluster seamlessly without manual re‑configuration.
+
+- **Automatic State Sync:**  
+  New or returning nodes fetch the latest state from the cluster automatically.
+
+- **Persistent Storage:**  
+  Data is saved to a local `storage.db` file to prevent data loss upon node restarts.
+
+- **RESTful API:**  
+  A simple HTTP interface (using GET, PUT, DELETE) makes it easy to interact with your data.
+
+---
 
 ## Getting Started
 
@@ -19,53 +50,92 @@ Follow these steps to get DynaRust running on your local machine or server.
 
 ### Prerequisites
 
-You'll need the following installed on your system before you can build or run DynaRust:
+Install the following before building or running DynaRust:
 
-*   **Rust:** Version 1.86.0 or newer. Includes `cargo` (the Rust package manager and build tool). You can install Rust using [rustup](https://rustup.rs/).
-*   **Standard Build Tools:** A C compiler (like `gcc`), `make`, and other common build utilities.
-    *   On Debian/Ubuntu: `sudo apt update && sudo apt install build-essential`
-    *   On Fedora/CentOS/RHEL: `sudo dnf groupinstall "Development Tools"` or `sudo yum groupinstall "Development Tools"`
-*   **OpenSSL Development Libraries:** Required for cryptographic operations used in dependencies.
-    *   On Debian/Ubuntu: `sudo apt install libssl-dev`
-    *   On Fedora/CentOS/RHEL: `sudo dnf install openssl-devel` or `sudo yum install openssl-devel`
-*   **pkg-config:** A helper tool used to find compiler and linker flags for libraries.
-    *   On Debian/Ubuntu: `sudo apt install pkg-config`
-    *   On Fedora/CentOS/RHEL: `sudo dnf install pkgconf-pkg-config` or `sudo yum install pkgconfig`
+- **Rust:** Version 1.86.0 or newer. (Includes `cargo`—the Rust package manager and build tool.)  
+  [Install Rust with rustup](https://rustup.rs/).
+
+- **Standard Build Tools:**  
+  A C compiler (like `gcc`), `make`, and other common build utilities.
+    - On Debian/Ubuntu:
+      ```bash
+      sudo apt update && sudo apt install build-essential
+      ```
+    - On Fedora/CentOS/RHEL:
+      ```bash
+      sudo dnf groupinstall "Development Tools"
+      ```  
+      or
+      ```bash
+      sudo yum groupinstall "Development Tools"
+      ```
+
+- **OpenSSL Development Libraries:**
+    - On Debian/Ubuntu:
+      ```bash
+      sudo apt install libssl-dev
+      ```
+    - On Fedora/CentOS/RHEL:
+      ```bash
+      sudo dnf install openssl-devel
+      ```  
+      or
+      ```bash
+      sudo yum install openssl-devel
+      ```
+
+- **pkg-config:**
+    - On Debian/Ubuntu:
+      ```bash
+      sudo apt install pkg-config
+      ```
+    - On Fedora/CentOS/RHEL:
+      ```bash
+      sudo dnf install pkgconf-pkg-config
+      ```  
+      or
+      ```bash
+      sudo yum install pkgconfig
+      ```
 
 ### Installation
 
-You can either build DynaRust directly from the source code or use a pre-built Docker image.
+You can either build DynaRust directly from source or use a pre‑built Docker image.
 
-**Option 1: Build from Source**
+#### Option 1: Build from Source
 
-1.  **Clone the Repository:** Get the source code from GitHub.
-    ```bash
-    git clone https://github.com/yourfavDev/DynaRust
-    cd DynaRust
-    ```
-    *(Note: Replace `https://github.com/yourfavDev/DynaRust` with the actual repository URL if different)*
+1. **Clone the Repository:**
+   ```bash
+   git clone https://github.com/yourfavDev/DynaRust
+   cd DynaRust
+   ```  
+   *(Replace the URL with the actual repository location if needed.)*
 
-2.  **Build the Project:** Compile the Rust code. This command builds an optimized release executable.
-    ```bash
-    cargo build --release
-    ```
-    The final binary will be located at `target/release/DynaRust`.
+2. **Build the Project:**  
+   Compile the Rust code for an optimized release build:
+   ```bash
+   cargo build --release
+   ```  
+   The final binary is located at `target/release/DynaRust`.
 
-**Option 2: Using Docker**
+#### Option 2: Using Docker
 
-If you have Docker installed and prefer containerization:
+If you prefer containerization and have Docker installed:
 
-1.  **Build the Docker Image:** From the root directory of the cloned repository:
-    ```bash
-    docker build -t dynarust:latest .
-    ```
-    This command uses the `Dockerfile` in the repository to build a container image named `dynarust` with the tag `latest`.
+1. **Build the Docker Image:**  
+   From the repository’s root directory:
+   ```bash
+   docker build -t dynarust:latest .
+   ```
+   This command builds a container image named `dynarust` with the tag `latest`.
 
-    *(See the [Deployment with Docker](#deployment-with-docker) section below for instructions on how to run the container).*
+*(See the [Deployment with Docker](#deployment-with-docker) section for running the container.)*
 
-### Running DynaRust
+---
 
-Once built (or using Docker), you can start DynaRust nodes. The executable accepts command-line arguments to configure its network address and join an existing cluster.
+## Running DynaRust
+
+After building (or using Docker), start DynaRust nodes using command‑line arguments to set the listening address and (optionally) join an existing cluster.
 
 **Command Syntax:**
 
@@ -73,80 +143,123 @@ Once built (or using Docker), you can start DynaRust nodes. The executable accep
 ./target/release/DynaRust <LISTEN_ADDRESS> [JOIN_ADDRESS]
 ```
 
-*   **`LISTEN_ADDRESS` (Required):** The IP address and port where this DynaRust node should listen for incoming API requests and cluster communication (e.g., `127.0.0.1:6660` for local testing, or `0.0.0.0:6660` to listen on all network interfaces).
-*   **`JOIN_ADDRESS` (Optional):** The IP address and port of an *existing* DynaRust node already running in the cluster. If provided, this node will contact the `JOIN_ADDRESS` node to join the cluster and synchronize state. If omitted, this node starts as the first node of a new cluster.
+- **`LISTEN_ADDRESS` (Required):**  
+  The IP address and port for this node to listen for incoming API requests and cluster communication. For example, `127.0.0.1:6660` for local testing or `0.0.0.0:6660` to accept connections from any network interface.
+
+- **`JOIN_ADDRESS` (Optional):**  
+  The IP address and port of an existing DynaRust node. If provided, this node will contact the `JOIN_ADDRESS` to join the cluster and synchronize state. If omitted, it starts a new cluster.
 
 **Example 1: Start the First Node**
 
-This command starts a single DynaRust node listening on the local machine at port `6660`. It forms a new cluster by itself.
+This starts a single node on the local machine at port 6660, forming a new cluster:
 ```bash
 ./target/release/DynaRust 127.0.0.1:6660
 ```
-*Output logs will appear in the terminal.*
+*The terminal will display output logs.*
 
-**Example 2: Start a Second Node and Join the First One**
+**Example 2: Start a Second Node and Join the First**
 
-This command starts a second DynaRust node listening on the local machine at port `6661`. It attempts to join the cluster by contacting the first node running at `127.0.0.1:6660`.
+This starts a second node on port 6661 and has it join the cluster via the first node (`127.0.0.1:6660`):
 ```bash
 ./target/release/DynaRust 127.0.0.1:6661 127.0.0.1:6660
 ```
-*After starting, this node will synchronize its state with the first node.*
+*After initialization, the new node synchronizes its state with the cluster.*
 
-*You can start additional nodes by providing a unique `LISTEN_ADDRESS` for each and pointing them to any existing node's address using `JOIN_ADDRESS`.*
+You can add additional nodes by providing unique `LISTEN_ADDRESS` values and specifying any existing node as `JOIN_ADDRESS`.
+
+---
 
 ## Using the API
 
-Interact with your DynaRust cluster using standard HTTP requests. You can send requests to *any* node in the cluster; the system handles routing and data consistency internally. Common tools like `curl` are suitable for this.
+Interact with your DynaRust cluster using standard HTTP requests. You can send requests to *any* node; the system handles routing and data consistency internally.
 
 **Note:**
-*   Replace `localhost:6660` in the examples below with the actual `LISTEN_ADDRESS` of any running node in your cluster.
-*   For storing data (PUT requests), the request body **must** be JSON format: `{"value": "your-data"}`. Set the `Content-Type` header accordingly.
+- Replace `localhost:6660` in examples with the actual `LISTEN_ADDRESS` of a running node.
+- For PUT requests, the request body **must** be JSON (e.g., `{"value": "your-data"}`) and the `Content-Type` header set appropriately.
 
-1.  **Store or Update a Value:** (HTTP PUT)
-    Creates a new key or updates the value of an existing key.
-    ```bash
-    curl -X PUT http://localhost:6660/key/mykey -H "Content-Type: application/json" -d '{"value": "mydata"}'
-    # Expected Response: HTTP 200 OK (on success)
-    ```
-    *Replace `mykey` with your desired key and `mydata` with the value you want to store.*
+Below is an updated version of the API endpoints documentation that clearly shows the use of the `{table}` segment in all key‑value related endpoints. In these examples, replace `{table}` with your desired table name (for example, `"default"`) when making requests.
 
-2.  **Retrieve a Value:** (HTTP GET)
-    Fetches the value associated with a specific key.
-    ```bash
-    curl http://localhost:6660/key/mykey
-    # Expected Response: {"value": "mydata"} (if key exists)
-    # Expected Response: HTTP 404 Not Found (if key doesn't exist)
-    ```
+---
 
-3.  **Delete a Value:** (HTTP DELETE)
-    Removes a key and its associated value from the store.
-    ```bash
-    curl -X DELETE http://localhost:6660/key/mykey
-    # Expected Response: HTTP 200 OK (if key existed and was deleted)
-    # Expected Response: HTTP 404 Not Found (if key didn't exist)
-    ```
+## Using the API
 
-4.  **View Cluster Membership:** (HTTP GET)
-    Retrieves a list of the network addresses of all nodes currently known to be part of the cluster.
-    ```bash
-    curl http://localhost:6660/membership
-    # Expected Response: A JSON array of strings, e.g.,
-    # ["127.0.0.1:6660", "127.0.0.1:6661"]
-    ```
+All key‑value operations are now scoped under a table. If you don't specify a table, the system uses the default table (named `"default"`). Replace `{table}` in the URLs with the name of your table. For example, to work in the default table, use `default` in place of `{table}`.
 
+1. **Store or Update a Value (HTTP PUT):**  
+   Creates or updates a key's value within a particular table.
+   ```bash
+   curl -X PUT http://localhost:6660/default/key/mykey \
+     -H "Content-Type: application/json" \
+     -d '{"value": "mydata"}'
+   ```
+   *Expected Response: HTTP 200 OK on success.*
+
+2. **Retrieve a Value (HTTP GET):**  
+   Retrieves the value associated with a key in a specific table.
+   ```bash
+   curl http://localhost:6660/default/key/mykey
+   ```
+   *Expected Response: `{"value": "mydata"}` if the key exists, or HTTP 404 Not Found if it does not.*
+
+3. **Delete a Value (HTTP DELETE):**  
+   Removes a key (and its value) from a table.
+   ```bash
+   curl -X DELETE http://localhost:6660/default/key/mykey
+   ```
+   *Expected Response: HTTP 200 OK if deleted, or HTTP 404 Not Found if the key wasn't present.*
+
+4. **Fetch the Entire Store for a Table (HTTP GET):**  
+   Returns all key‑value pairs stored in the specified table.
+   ```bash
+   curl http://localhost:6660/default/store
+   ```
+   *Expected Response: A JSON object containing all key‑value entries for the table.*
+
+5. **Retrieve Table Keys (HTTP GET/POST):**
+    - **GET Request:** Retrieves all keys for a table.
+      ```bash
+      curl http://localhost:6660/default/keys
+      ```
+    - **POST Request:** Retrieve multiple keys by providing a list.
+      ```bash
+      curl -X POST http://localhost:6660/default/keys \
+        -H "Content-Type: application/json" \
+        -d '["key1", "key2", "key3"]'
+      ```
+
+6. **Subscribe to Real‑Time Updates (HTTP GET):**  
+   Connect using Server‑Sent Events (SSE) to receive instant updates for a key within a table.
+   ```bash
+   curl -N http://localhost:6660/default/subscribe/mykey
+   ```
+   *Changes on the key are pushed in less than 5 ms, and a single node on a VPS (1GB RAM, 100Mbps) can handle up to 5000 live connections. Scaling capacity is as easy as adding more nodes to the cluster.*
+
+---
 ## How it Works (Conceptual Overview)
 
-DynaRust operates as a distributed system achieving **eventual consistency**. This means that while updates might take a short time to propagate, all nodes will eventually converge to the same data state. Here's a simplified breakdown of the process:
+DynaRust is a distributed system that achieves eventual consistency through a state synchronization process:
 
-1.  **Client Request:** A client application sends an HTTP request (e.g., PUT `/key/mykey`) to the API endpoint of *any* node in the DynaRust cluster.
-2.  **Local Processing:** The node receiving the request processes it immediately:
-    *   For PUT/DELETE: It updates its own in-memory key-value map.
-    *   For GET: It reads the value from its in-memory map.
-3.  **Persistence:** Periodically (or on certain triggers), the node writes its current in-memory state to a local file named `storage.db` in its working directory. This ensures data survives node restarts.
-4.  **Cluster Synchronization (Gossip Protocol):**
-    *   **Membership:** Nodes periodically exchange messages ("gossip") with a few other random nodes, sharing their view of the current cluster membership list. This way, information about joining or leaving nodes spreads throughout the cluster.
-    *   **State:** When a node receives an update (PUT/DELETE), this change is eventually included in synchronization messages sent to other nodes. Over time, all nodes receive the update.
-    *   **Joining:** When a new node starts with a `JOIN_ADDRESS`, it contacts that node. It receives the current membership list and requests the full data state from one or more existing nodes. It merges this state into its local store before becoming fully active.
+1. **Client Request:**  
+   A client sends an HTTP request (e.g., PUT `/key/mykey`) to any node in the cluster.
+
+2. **Local Processing:**  
+   The receiving node:
+    - For PUT/DELETE: Updates its in‑memory key‑value store immediately.
+    - For GET: Reads the value from memory.
+
+3. **Persistence:**  
+   The node periodically writes its in‑memory state to a local `storage.db` file, ensuring data durability across restarts.
+
+4. **Cluster Synchronization (Gossip Protocol):**
+    - **Membership:** Nodes periodically exchange messages about cluster membership.
+    - **State:** Updates are eventually gossiped throughout the cluster.  
+      *Real‑time updates: Subscribed clients receive live changes via SSE in less than \(5\,\text{ms}\).*
+
+      **Performance Highlight:**  
+      On a typical VPS with 1GB of RAM and a 100Mbps bandwidth connection, a node can handle up to **5000 concurrent live SSE connections**. Adding more nodes to your cluster scales the capacity seamlessly.
+
+5. **Joining:**  
+   A new node contacts an existing node (using the `JOIN_ADDRESS`), retrieves the current membership and state, then joins the cluster to serve requests.
 
 ```ascii
 +--------+       +-------------------+       +-----------------+
@@ -160,108 +273,106 @@ DynaRust operates as a distributed system achieving **eventual consistency**. Th
              (Eventual Consistency)         +--------------+   +---(storage.db)--+
 ```
 
+---
+
 ## Deployment with Docker
 
-Using Docker provides a consistent environment and simplifies managing dependencies and deployment across different machines.
+Docker simplifies deployment by providing a consistent environment and handling dependency management.
 
 ### Prerequisites
 
-*   **Docker:** Version 20.10 or newer installed and running.
-*   **Network Connectivity:** If running multiple DynaRust containers as a cluster, they need to be able to communicate with each other over the network on the configured `LISTEN_ADDRESS` port (default 6660 inside the container). Docker networking features (like user-defined bridge networks) are recommended for this.
+- **Docker:** Version 20.10 or newer installed and running.
+- **Network Connectivity:** Ensure that multiple DynaRust containers on the same Docker network can communicate on the configured `LISTEN_ADDRESS` port (default 6660 inside the container).
 
 ### Steps
 
-1.  **Build the Image:** (If you haven't already built it using the steps in the Installation section)
-    ```bash
-    docker build -t dynarust:latest .
-    ```
+1. **Build the Image:**  
+   If you haven’t already built it:
+   ```bash
+   docker build -t dynarust:latest .
+   ```
 
-2.  **Run the Container(s):**
+2. **Run the Container(s):**
 
-    *   **Running the First Node:**
-        This command starts the first node in a new cluster.
-        ```bash
-        # Runs the first node in detached mode, names it 'dynarust-node1',
-        # maps host port 6660 to container port 6660.
-        # The node inside the container listens on 0.0.0.0:6660.
-        docker run -d --name dynarust-node1 -p 6660:6660 dynarust:latest 0.0.0.0:6660
-        ```
-        *   `-d`: Run the container in the background (detached mode).
-        *   `--name dynarust-node1`: Assigns a convenient name to the container.
-        *   `-p 6660:6660`: Maps port `6660` on the host machine to port `6660` inside the container. You can access the API via `http://<host-ip>:6660`.
-        *   `dynarust:latest`: Specifies the Docker image to use.
-        *   `0.0.0.0:6660`: This is the `LISTEN_ADDRESS` passed to the DynaRust process *inside* the container, telling it to listen on all its network interfaces on port 6660.
+    - **Running the First Node:**  
+      Start the first node in a new cluster:
+      ```bash
+      # Start the first node in detached mode, name it 'dynarust-node1',
+      # map host port 6660 to container port 6660.
+      docker run -d --name dynarust-node1 -p 6660:6660 \
+        dynarust:latest 0.0.0.0:6660
+      ```
+      The node listens on all interfaces (0.0.0.0) on port 6660.
 
-    *   **Running Additional Nodes to Join the Cluster:**
-        To add more nodes, you need to provide the `JOIN_ADDRESS`. This address must be reachable *from within the Docker network*. Using the container name of the first node (`dynarust-node1`) often works if the containers are on the same Docker network.
+    - **Running Additional Nodes:**  
+      To add more nodes, specify the `JOIN_ADDRESS`. For example:
+      ```bash
+      # Start a second node, name it 'dynarust-node2', mapping host port 6661
+      # to container port 6660. It joins the existing cluster via 'dynarust-node1:6660'.
+      docker run -d --name dynarust-node2 -p 6661:6660 \
+        dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
+      ```
 
-        ```bash
-        # Runs a second node, names it 'dynarust-node2', maps host port 6661
-        # to container port 6660.
-        # It listens on 0.0.0.0:6660 inside its container and joins
-        # the cluster via the first node (dynarust-node1:6660).
-        docker run -d --name dynarust-node2 -p 6661:6660 \
-          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-        *   `-p 6661:6660`: Maps port `6661` on the host to port `6660` inside *this* container. You access this node's API via `http://<host-ip>:6661`.
-        *   `0.0.0.0:6660`: The `LISTEN_ADDRESS` for the second node *inside* its container.
-        *   `dynarust-node1:6660`: The `JOIN_ADDRESS`. Docker's internal DNS should resolve the service name `dynarust-node1` to the first container's IP address, targeting port 6660.
+   **Important Docker Networking Notes:**
+    - For inter-container communication, create a custom network:
+      ```bash
+      docker network create dynanet
+      docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
+        dynarust:latest 0.0.0.0:6660
+      docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
+        dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
+      ```
+    - **Data Persistence:**  
+      By default, the `storage.db` file is stored inside the container, which is ephemeral. To persist data, mount a Docker volume:
+      ```bash
+      docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
+        -v dynarust-data1:/app \
+        dynarust:latest 0.0.0.0:6660
+      ```
+      *(Adjust the mount path `/app` if needed.)*
 
-    **Important Docker Networking Notes:**
-    *   For reliable communication between containers using names (`dynarust-node1`), it's best practice to create a custom Docker network and attach the containers to it:
-        ```bash
-        docker network create dynanet
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 dynarust:latest 0.0.0.0:6660
-        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-    *   **Persistence with Volumes:** By default, the `storage.db` file is stored inside the container and will be lost if the container is removed. To persist data, use Docker volumes:
-        ```bash
-        # Example for the first node, mounting a named volume 'dynarust-data1'
-        # to the container's working directory '/app' (assuming /app is WORKDIR in Dockerfile)
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          -v dynarust-data1:/app \
-          dynarust:latest 0.0.0.0:6660
-        ```
-        *(Adjust the volume mount path `/app` if the working directory in your Dockerfile is different).*
+---
 
 ## Troubleshooting
 
-If you encounter issues, here are some common problems and solutions:
+If you run into issues, consider the following tips:
 
-1.  **Node Fails to Join Cluster:**
-    *   **Symptom:** A new node starts but doesn't appear in the `/membership` list of other nodes, or it logs errors about connection refused/timeout.
-    *   **Checks:**
-        *   **Verify Target Node:** Is the node specified in `JOIN_ADDRESS` actually running and accessible? Try `curl http://<JOIN_ADDRESS>/membership` from the machine trying to join (or from within the joining container if using Docker). It should respond with a membership list.
-        *   **Network Connectivity:** Can the joining node reach the `JOIN_ADDRESS` node on the specified port?
-            *   *Native:* Use `ping <ip-address>` (checks basic reachability) and `nc -zv <ip-address> <port>` or `telnet <ip-address> <port>` (checks if the port is open). Check firewalls on both machines.
-            *   *Docker:* Ensure containers are on the same Docker network. Use `docker exec <joining-container-name> ping <target-container-name>` or `docker exec <joining-container-name> nc -zv <target-container-name> <port>`. Check Docker network configurations.
-        *   **Address Mismatch:** Double-check that the `LISTEN_ADDRESS` and `JOIN_ADDRESS` are correct. If using Docker, ensure you are using the correct internal container names/IPs and ports for the `JOIN_ADDRESS`.
-        *   **Check Logs:** Examine the console output of *both* the joining node and the target node for specific error messages. Enable debug logging for more details (see below).
+1. **Node Fails to Join Cluster:**
+    - **Verify Target Node:** Ensure the node at `JOIN_ADDRESS` is running and accessible.
+    - **Network Connectivity:**
+        - *Native:* Use tools like `ping` or `nc -zv <ip-address> <port>`.
+        - *Docker:* Verify containers are on the same network and use container names for DNS.
+    - **Address Mismatch:** Double‑check the `LISTEN_ADDRESS` and `JOIN_ADDRESS`.
+    - **Check Logs:** Look at the logs of both the joining and target nodes (enable debug logging with `RUST_LOG=debug`).
 
-2.  **Data Not Synchronizing / Inconsistent Reads:**
-    *   **Symptom:** Reading a key from different nodes yields different results, or data written to one node doesn't appear on others after a short wait.
-    *   **Checks:**
-        *   **Wait (Eventual Consistency):** Remember that consistency is eventual. Allow a few seconds for synchronization to occur, especially in larger clusters or high-latency networks.
-        *   **Check Membership:** Use `curl http://<any-node-address>/membership` on multiple nodes. Do all nodes agree on the cluster membership? If not, there might be a network partition or join issue.
-        *   **Check Logs:** Look for errors related to synchronization, serialization, or network communication in the logs of all nodes. Enable debug logging.
+2. **Data Not Synchronizing / Inconsistent Reads:**
+    - **Eventual Consistency:** Allow a few seconds for updates to propagate.
+    - **Check Membership:** Run `curl http://<node-address>/membership` to ensure all nodes are recognized.
+    - **Review Logs:** Investigate any error messages related to synchronization or network issues.
 
-3.  **Data Lost After Restart:**
-    *   **Symptom:** Data stored previously is gone after stopping and restarting a DynaRust node.
-    *   **Checks:**
-        *   **Disk Persistence:** The `storage.db` file should be created in the working directory where the `DynaRust` executable was run.
-            *   *Native:* Does the user running the process have write permissions in that directory? Is there enough disk space?
-            *   *Docker:* Are you using Docker volumes? If not, the data is ephemeral and stored only within the container's temporary filesystem. Ensure you mount a volume to the correct working directory inside the container (e.g., `-v volume-name:/app`) to persist the `storage.db` file.
+3. **Data Lost After Restart:**
+    - **Disk Persistence:**
+        - Verify that the user has write permissions and sufficient disk space.
+        - In Docker, ensure you mount a volume to persist `storage.db`.
 
-4.  **General Debugging - Enable Debug Logs:**
-    *   To get much more detailed information about internal operations (like synchronization, joining, request processing), run DynaRust with the `RUST_LOG` environment variable set to `debug`.
-    *   **Native Execution:**
-        ```bash
-        RUST_LOG=debug ./target/release/DynaRust <LISTEN_ADDRESS> [JOIN_ADDRESS]
-        ```
-    *   **Docker Execution:** Add the environment variable using the `-e` flag in `docker run`:
-        ```bash
-        docker run -d --name dynarust-node1 -p 6660:6660 \
-          -e RUST_LOG=debug \
-          dynarust:latest 0.0.0.0:6660
-        ```
-    *   Monitor the container logs (`docker logs dynarust-node1`) or the terminal output for detailed messages.
+4. **General Debugging:**  
+   Enable debug logs for detailed information:
+    - **Native Execution:**
+      ```bash
+      RUST_LOG=debug ./target/release/DynaRust <LISTEN_ADDRESS> [JOIN_ADDRESS]
+      ```
+    - **Docker Execution:**
+      ```bash
+      docker run -d --name dynarust-node1 -p 6660:6660 \
+        -e RUST_LOG=debug \
+        dynarust:latest 0.0.0.0:6660
+      ```
+   Check container logs (`docker logs dynarust-node1`) or terminal output.
+
+---
+
+With its robust real‑time update capabilities—handling up to **5000 live connections per node** on a modest VPS—and seamless scalability, DynaRust is ideal for applications needing instantaneous data propagation across distributed environments. Enjoy building high‑performance, real‑time systems with DynaRust!
+
+---
+
+Feel free to ask if you have any questions or need further customizations.

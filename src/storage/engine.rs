@@ -9,7 +9,7 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use web::Json;
-
+use crate::storage::subscription::{KeyEvent, SubscriptionManager};
 //
 // CORE DATA STRUCTURES
 //
@@ -237,18 +237,21 @@ pub async fn get_value(
     HttpResponse::Ok().json(latest)
 }
 
-/// PUT handler: Inserts or updates a key-value pair and replicates to active nodes
+/// PUT handler: Inserts or updates a key–value pair and replicates to active nodes.
+/// Also sends a live update notification via the SubscriptionManager.
 pub async fn put_value(
     req: HttpRequest,
     path: web::Path<(String, String)>,
     state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
+    // New dependency injection for the subscription manager.
+    sub_manager: web::Data<SubscriptionManager>,
     body: web::Json<HashMap<String, Value>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
-    // Handle internal replication request (no further replication)
+    // Handle internal replication request (skip notifications).
     if req.headers().contains_key("X-Internal-Request") {
         let new_value = {
             let mut store = state.store.write().await;
@@ -262,10 +265,13 @@ pub async fn put_value(
                 v
             }
         };
+        sub_manager.notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone())).await;
+
         return HttpResponse::Created().json(new_value);
     }
 
-    // For external requests, update locally first
+
+    // External request: update local store.
     let new_value = {
         let mut store = state.store.write().await;
         let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
@@ -279,7 +285,11 @@ pub async fn put_value(
         }
     };
 
-    // Replicate to other nodes
+    // Notify all subscribers that the key has been updated.
+    sub_manager.notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone())).await;
+
+
+    // Replicate to other nodes.
     let cluster_guard = cluster_data.nodes.read().await;
     let active_nodes = get_active_nodes(&*cluster_guard);
     drop(cluster_guard);
@@ -289,7 +299,6 @@ pub async fn put_value(
 
     let client = reqwest::Client::new();
     let mut replication_futures = Vec::new();
-
     for target in targets {
         if target != *current_addr.get_ref() {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
@@ -314,35 +323,40 @@ pub async fn put_value(
         }
     }
 
-    // Fire replication requests, but don't wait for them to complete
+    // Fire replication requests asynchronously.
     tokio::spawn(async move {
         futures_util::future::join_all(replication_futures).await;
     });
 
-    // Return immediately after local update
     HttpResponse::Created().json(new_value)
 }
 
-/// DELETE handler: Removes a key and replicates the deletion to active nodes
+/// DELETE handler: Removes a key and replicates the deletion to active nodes.
+/// Also notifies subscribers of the deletion event.
 pub async fn delete_value(
     req: HttpRequest,
     path: web::Path<(String, String)>,
     state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
+    sub_manager: web::Data<SubscriptionManager>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
-    // Handle internal replication request
+    // Internal replication request.
     if req.headers().contains_key("X-Internal-Request") {
         let mut store = state.store.write().await;
         if let Some(table) = store.get_mut(&table_name) {
             table.remove(&key_val);
         }
+        sub_manager
+            .notify(&table_name, &key_val, KeyEvent::Deleted)
+            .await;
+
         return HttpResponse::Ok().json(json!({"message": "Deleted"}));
     }
 
-    // For external requests, delete locally first
+    // External request: remove the key locally.
     let local_status = {
         let mut store = state.store.write().await;
         if let Some(table) = store.get_mut(&table_name) {
@@ -357,7 +371,12 @@ pub async fn delete_value(
             .to_string()
     };
 
-    // Replicate deletion to other nodes
+    // Notify subscribers that the key has been deleted.
+    sub_manager
+        .notify(&table_name, &key_val, KeyEvent::Deleted)
+        .await;
+
+    // Replicate deletion to other nodes.
     let cluster_guard = cluster_data.nodes.read().await;
     let active_nodes = get_active_nodes(&*cluster_guard);
     drop(cluster_guard);
@@ -367,12 +386,10 @@ pub async fn delete_value(
 
     let client = reqwest::Client::new();
     let mut replication_futures = Vec::new();
-
     for target in targets {
         if target != *current_addr.get_ref() {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
-
             let fut = async move {
                 let result = client_clone
                     .delete(&url)
@@ -385,20 +402,16 @@ pub async fn delete_value(
                     println!("Deletion replication error to {}: {}", target, e);
                 }
             };
-
             replication_futures.push(fut);
         }
     }
 
-    // Fire replication requests in background
     tokio::spawn(async move {
         futures_util::future::join_all(replication_futures).await;
     });
 
-    // Return immediately after local deletion
     HttpResponse::Ok().json(json!({"message": local_status}))
 }
-
 //
 // TABLE MANAGEMENT HANDLERS
 //

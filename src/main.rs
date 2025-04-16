@@ -18,6 +18,7 @@ use storage::engine::{
 };
 use storage::persistance::{cold_save, load_all_tables};
 use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
+use crate::storage::subscription::SubscriptionManager;
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
 static APP_STATE: OnceCell<web::Data<AppState>> = OnceCell::new();
@@ -169,12 +170,14 @@ async fn main() -> std::io::Result<()> {
     let cluster_clone = cluster_data.clone();
     let current_clone = current_node.clone();
     tokio::spawn(membership_sync(cluster_clone, current_clone, 60));
+    let subscription_manager = web::Data::new(SubscriptionManager::new());
 
     println!("Starting distributed DB engine at http://{}", current_node);
 
     // Build and run the HTTP server.
     HttpServer::new(move || {
         App::new()
+            .app_data(subscription_manager.clone())
             .app_data(state.clone())
             .app_data(cluster_data.clone())
             .app_data(web::Data::new(current_node.clone()))
@@ -194,6 +197,9 @@ async fn main() -> std::io::Result<()> {
             // Endpoints to get keys from a table.
             .route("/{table}/keys", web::get().to(get_all_keys))
             .route("/{table}/keys", web::post().to(get_multiple_keys))
+            .route("/{table}/subscribe/{key}", web::get().to(
+                storage::subscription::subscribe_to_key
+            ))
     })
         .bind(bind_addr.as_str())?
         .run()
