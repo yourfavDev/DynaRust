@@ -43,7 +43,8 @@ jobs:
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-target-
-
+      - name: Test with Cargo
+        run: cargo test
       # 5. Build your project with Cargo in release mode.
       - name: Build with Cargo
         run: cargo build --release
