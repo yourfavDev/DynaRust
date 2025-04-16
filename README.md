@@ -8,6 +8,11 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 
 ---
 
+## 🛜 Main node running:
+![main](https://github.com/yourfavDev/DynaRust/blob/42013f18f1f4d0ede1cad81ed1249e42f12f2951/docs/main.png)
+## ⏎ Second node joins the main node (forming a cluster)
+![second](https://github.com/yourfavDev/DynaRust/blob/42013f18f1f4d0ede1cad81ed1249e42f12f2951/docs/second.png)
+
 ## ✨ Key Features
 
 *   **🔥 HOT RELOAD & REAL‑TIME UPDATES:**
@@ -16,6 +21,7 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     # Example: Subscribe to 'statusKey' in the 'notifications' table
     curl -N http://localhost:8080/notifications/subscribe/statusKey
     ```
+    ![liveupdate](https://github.com/yourfavDev/DynaRust/blob/edc84068e9f88be693cdeb7085b19a648ea33b7d/docs/liveupdate.gif)
     Changes are pushed instantly (< 5 ms latency). On a standard VPS (1GB RAM, 100Mbps), a single node handles up to **5000 simultaneous live connections** 💪. Need more capacity? Just add more nodes!
 
     *   **Use Case Example:** Imagine a web UI needing push notifications. Store device IDs as keys in a `devices` table. Use a separate `status` key in the same table. The frontend listens to `devices/subscribe/status`. The backend iterates through device keys, performs actions, and updates the `status` key, instantly notifying all listening frontends. Simple and blazing fast! ⚡️
