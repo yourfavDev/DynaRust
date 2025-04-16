@@ -15,6 +15,7 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 | Memory Consumption     | 350 MB                                        |
 | Cluster Startup        | < 1 sec                                       |
 | GET Operation Latency  | ~20 ms                                        |
+| Cold storage Usage     | ~30 MB of disk data |
 
 ### While inserting ~300 rows/sec we had a SSE client open on a key flawlessly getting live updates in <5 ms (Cheapest AWS EC2)
 ---
