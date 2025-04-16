@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use storage::engine::{
     AppState, ClusterData, delete_value, get_value, get_table_store, join_cluster, put_value,
     get_all_keys, get_multiple_keys, NodeInfo, NodeStatus, current_timestamp,
-    VersionedValue,
+    VersionedValue, get_global_store
 };
 use storage::persistance::{cold_save, load_all_tables};
 use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
@@ -54,10 +54,6 @@ fn merge_global_store(
     }
 }
 
-async fn get_global_store(state: web::Data<AppState>) -> impl Responder {
-    let store = state.store.read().await;
-    web::Json(store.clone())
-}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -101,7 +97,10 @@ async fn main() -> std::io::Result<()> {
         let join_url = format!("http://{}/join", join_node);
         match client
             .post(&join_url)
-            .json(&json!({ "node": current_node }))
+            .json(&json!({
+                "node": current_node,
+                "secret": std::env::var("CLUSTER_SECRET").unwrap_or_default()
+            }))
             .send()
             .await
         {
@@ -117,9 +116,10 @@ async fn main() -> std::io::Result<()> {
             Err(e) => println!("Error joining cluster: {}", e),
         }
 
+
         // Pull the remote state for all tables.
         let store_url = format!("http://{}/store", join_node);
-        match client.get(&store_url).send().await {
+        match client.get(&store_url).header("x-api-key", std::env::var("CLUSTER_SECRET").unwrap_or_default()).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
                     let remote_store = resp

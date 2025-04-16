@@ -1,12 +1,14 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+use web::Json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionedValue {
@@ -131,12 +133,19 @@ pub async fn get_table_store(
 #[derive(Deserialize)]
 pub struct JoinRequest {
     node: String,
+    secret: String,
 }
 
 pub async fn join_cluster(
     cluster: web::Data<ClusterData>,
-    request: web::Json<JoinRequest>,
+    request: Json<JoinRequest>,
 ) -> impl Responder {
+    let cluster_secret = env::var("CLUSTER_SECRET")
+        .unwrap_or_else(|_| "default_secret".to_string());
+
+    if request.secret != cluster_secret {
+        return HttpResponse::Unauthorized().body("Invalid cluster secret");
+    }
     let new_node = request.node.clone();
     let mut nodes_guard = cluster.nodes.write().await;
     if !nodes_guard.contains_key(&new_node) {
@@ -150,6 +159,39 @@ pub async fn join_cluster(
     }
     HttpResponse::Ok().json(nodes_guard.clone())
 }
+
+pub async fn get_global_store(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    // Retrieve the valid API key from the environment variable.
+    // In production, ensure this secret is securely managed.
+    let valid_api_key =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+
+    // Check for the API key in the "x-api-key" header.
+    match req.headers().get("x-api-key") {
+        Some(header_value) => {
+            // Convert the header value to a string.
+            if let Ok(api_key) = header_value.to_str() {
+                if api_key != valid_api_key {
+                    return HttpResponse::Unauthorized()
+                        .body("Invalid API key provided");
+                }
+            } else {
+                return HttpResponse::BadRequest().body("Malformed API key header");
+            }
+        }
+        None => {
+            return HttpResponse::Unauthorized().body("Missing API key");
+        }
+    };
+
+    // If the API key is valid, retrieve the store.
+    let store = state.store.read().await;
+    HttpResponse::Ok().json(store.clone())
+}
+
 
 /// GET handler for quorum reading a key's value.
 /// This function requests the key from all active nodes
@@ -251,7 +293,7 @@ pub async fn put_value(
     state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
-    body: web::Json<HashMap<String, Value>>,
+    body: Json<HashMap<String, Value>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
@@ -422,7 +464,7 @@ pub struct KeysRequest {
 /// Returns a JSON object mapping each found key to its stored VersionedValue.
 pub async fn get_multiple_keys(
     table: web::Path<String>,
-    keys_request: web::Json<KeysRequest>,
+    keys_request: Json<KeysRequest>,
     state: web::Data<AppState>,
 ) -> impl Responder {
     let table_name = table.into_inner();

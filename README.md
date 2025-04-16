@@ -5,7 +5,7 @@ DynaRust is a distributed key-value store built in Rust. It's designed to be rel
 Think of it as a shared dictionary spread across multiple computers. You can store data (key-value pairs), retrieve it, and delete it using a simple web API. DynaRust automatically copies your data across the available nodes for high availability and synchronizes changes, ensuring data consistency over time (eventual consistency). It stores data in memory for speed and saves it to disk (`storage.db`) so your data isn't lost if a node restarts.
 
 **Key Features:**
-
+*   **Cluster security:** Each node needs to know the "secret" token to join a cluster (CLUSTER_SECRET env var)
 *   **Distributed Storage:** Data is spread across all nodes in the cluster.
 *   **High Availability:** If one node fails, others can still serve requests for the available data.
 *   **Dynamic Cluster Membership:** Nodes can join or leave the cluster easily without manual reconfiguration of others.
