@@ -168,7 +168,7 @@ async fn main() -> std::io::Result<()> {
     // Spawn the membership synchronization (heartbeat) task.
     let cluster_clone = cluster_data.clone();
     let current_clone = current_node.clone();
-    tokio::spawn(membership_sync(cluster_clone, current_clone, 60));
+    tokio::spawn(membership_sync(cluster_clone, current_clone, 10));
 
     println!("Starting distributed DB engine at http://{}", current_node);
 
