@@ -2,7 +2,7 @@ mod storage;
 mod network;
 mod tokenizer;
 
-use actix_web::{web, App, HttpServer, Responder};
+use actix_web::{web, App, HttpServer};
 use once_cell::sync::OnceCell;
 use reqwest;
 use serde_json::json;
@@ -71,8 +71,6 @@ async fn main() -> std::io::Result<()> {
     let state = web::Data::new(AppState {
         base_dir: "./data",
         store: RwLock::new(HashMap::new()),
-        write_quorum: 0,
-        read_quorum: 0,
     });
     let _ = APP_STATE.set(state.clone());
 
@@ -99,7 +97,7 @@ async fn main() -> std::io::Result<()> {
             .post(&join_url)
             .json(&json!({
                 "node": current_node,
-                "secret": std::env::var("CLUSTER_SECRET").unwrap_or_default()
+                "secret": env::var("CLUSTER_SECRET").unwrap_or_default()
             }))
             .send()
             .await

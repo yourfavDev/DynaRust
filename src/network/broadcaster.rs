@@ -12,10 +12,14 @@ pub async fn membership_sync(
 ) {
     let client = reqwest::Client::new();
     loop {
+        // Wait for the specified interval.
         tokio::time::sleep(Duration::from_secs(interval_sec)).await;
+
+        // Update local membership state via heartbeat checks.
         {
             let mut nodes_guard = cluster_data.nodes.write().await;
             for (node, info) in nodes_guard.iter_mut() {
+                // Skip self.
                 if node == &current_addr {
                     continue;
                 }
@@ -25,10 +29,8 @@ pub async fn membership_sync(
                         if resp.status().is_success() {
                             info.last_heartbeat = current_timestamp();
                             info.status = NodeStatus::Active;
-                        } else {
-                            if info.status == NodeStatus::Active {
-                                info.status = NodeStatus::Suspect;
-                            }
+                        } else if info.status == NodeStatus::Active {
+                            info.status = NodeStatus::Suspect;
                         }
                     }
                     Err(_) => {
@@ -44,9 +46,43 @@ pub async fn membership_sync(
                 }
             }
         }
+
+        // Print the current membership snapshot.
         let nodes_snapshot = cluster_data.nodes.read().await;
         println!("Node {} membership: {:?}", current_addr, *nodes_snapshot);
-        // Optional: implement gossip here.
+
+        // Gossip: send your current membership state to all other nodes.
+        let membership_snapshot = nodes_snapshot.clone();
+        drop(nodes_snapshot); // Release lock before making outbound requests.
+
+        for (node, _) in membership_snapshot.iter() {
+            if node == &current_addr {
+                continue;
+            }
+            let gossip_url = format!("http://{}/update_membership", node);
+            let membership_clone = membership_snapshot.clone();
+            let client_clone = client.clone();
+            let node_clone = node.clone();
+
+            // Spawn a task to send the membership update asynchronously.
+            tokio::spawn(async move {
+                match client_clone
+                    .post(&gossip_url)
+                    .json(&membership_clone)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            eprintln!("Failed to gossip membership to {}: {}", node_clone, resp.status());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error gossiping membership to {}: {}", node_clone, e);
+                    }
+                }
+            });
+        }
     }
 }
 

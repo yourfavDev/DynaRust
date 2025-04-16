@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File, read_dir, OpenOptions};
+use std::fs::{create_dir_all, File, read_dir};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -25,7 +25,7 @@ fn decrypt(encrypted: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct WalEntry {
+pub struct WalEntry {
     op: String, // "put" or "delete"
     key: String,
     value: Option<VersionedValue>,
@@ -33,15 +33,15 @@ struct WalEntry {
 }
 
 /// Appends a Write-Ahead Log (WAL) entry to the WAL file for the specified table.
-pub async fn append_to_wal(state: &AppState, table: &str, entry: &WalEntry) -> io::Result<()> {
-    let folder_path = Path::new(state.base_dir).join(table);
-    create_dir_all(&folder_path)?;
-    let wal_path = folder_path.join("wal.log");
-    let mut file = OpenOptions::new().create(true).append(true).open(&wal_path)?;
-    let line = serde_json::to_string(entry)?;
-    writeln!(file, "{}", line)?;
-    Ok(())
-}
+// pub async fn append_to_wal(state: &AppState, table: &str, entry: &WalEntry) -> io::Result<()> {
+//     let folder_path = Path::new(state.base_dir).join(table);
+//     create_dir_all(&folder_path)?;
+//     let wal_path = folder_path.join("wal.log");
+//     let mut file = OpenOptions::new().create(true).append(true).open(&wal_path)?;
+//     let line = serde_json::to_string(entry)?;
+//     writeln!(file, "{}", line)?;
+//     Ok(())
+// }
 
 /// Saves the current in‑memory state (snapshot) for each table to disk.
 /// Also clears the WAL after snapshot.
