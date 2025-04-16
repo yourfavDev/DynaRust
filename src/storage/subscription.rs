@@ -53,7 +53,6 @@ impl SubscriptionManager {
 // storage/subscription.rs (continued)
 
 use actix_web::{web, HttpResponse, Responder};
-use futures::stream::StreamExt;
 use crate::storage::engine::VersionedValue;
 
 /// Subscribe to updates on a key. The URL contains the table and key.
