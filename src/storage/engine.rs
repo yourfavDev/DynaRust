@@ -530,3 +530,393 @@ pub async fn get_global_store(
     let store = state.store.read().await;
     HttpResponse::Ok().json(store.clone())
 }
+//
+// UNIT TESTS
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, web};
+    use actix_web::dev::ServiceResponse;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::env;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    // For testing purposes, we implement PartialEq and Eq for VersionedValue
+    impl PartialEq for VersionedValue {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value &&
+                self.version == other.version &&
+                self.timestamp == other.timestamp
+        }
+    }
+    impl Eq for VersionedValue {}
+
+    // All tests are async using the #[actix_web::test] attribute.
+
+    #[actix_web::test]
+    async fn test_current_timestamp() {
+        let ts = current_timestamp();
+        assert!(ts > 0);
+    }
+
+    #[actix_web::test]
+    async fn test_get_active_nodes() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            NodeInfo {
+                status: NodeStatus::Active,
+                last_heartbeat: 100,
+            },
+        );
+        nodes.insert(
+            "b".to_string(),
+            NodeInfo {
+                status: NodeStatus::Down,
+                last_heartbeat: 200,
+            },
+        );
+        let active = get_active_nodes(&nodes);
+        assert_eq!(active, vec!["a".to_string()]);
+    }
+
+    #[actix_web::test]
+    async fn test_get_replication_nodes() {
+        let nodes = vec![
+            "n1".to_string(),
+            "n2".to_string(),
+            "n3".to_string(),
+        ];
+        let result = get_replication_nodes("test_key", &nodes, 2);
+        assert_eq!(result.len(), 2);
+        for node in result {
+            assert!(nodes.contains(&node));
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_versioned_value_new_and_update() {
+        let mut value_map = HashMap::new();
+        value_map.insert("field".to_string(), json!("initial"));
+        let mut v = VersionedValue::new(value_map.clone());
+        assert_eq!(v.version, 1);
+
+        // Wait a bit so the timestamp changes.
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+        let mut new_map = HashMap::new();
+        new_map.insert("field".to_string(), json!("updated"));
+        v.update(new_map.clone());
+        assert_eq!(v.version, 2);
+        assert_eq!(v.value, new_map);
+    }
+
+    #[actix_web::test]
+    async fn test_get_table_store() {
+        let mut value_map = HashMap::new();
+        value_map.insert("foo".to_string(), json!("bar"));
+        let versioned = VersionedValue::new(value_map);
+        let mut table = HashMap::new();
+        table.insert("key1".to_string(), versioned.clone());
+        let mut store_map = HashMap::new();
+        store_map.insert("table1".to_string(), table);
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map),
+        });
+
+        let path = web::Path::from("table1".to_string());
+        let response = get_table_store(path, state).await;
+
+        // Create a dummy request.
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+
+        assert_eq!(service_resp.response().status(), 200);
+        let table_out: HashMap<String, VersionedValue> =
+            test::read_body_json(service_resp).await;
+        assert!(table_out.contains_key("key1"));
+    }
+
+    #[actix_web::test]
+    async fn test_get_all_keys() {
+        let mut table = HashMap::new();
+        table.insert(
+            "key1".to_string(),
+            VersionedValue::new(HashMap::from([("k".to_string(), json!("v"))])),
+        );
+        table.insert("key2".to_string(), VersionedValue::new(HashMap::new()));
+        let mut store_map = HashMap::new();
+        store_map.insert("table1".to_string(), table);
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map),
+        });
+
+        let path = web::Path::from("table1".to_string());
+        let response = get_all_keys(path, state).await;
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+
+        assert_eq!(service_resp.response().status(), 200);
+        let keys: Vec<String> = test::read_body_json(service_resp).await;
+        assert!(keys.contains(&"key1".to_string()));
+        assert!(keys.contains(&"key2".to_string()));
+    }
+
+    #[actix_web::test]
+    async fn test_get_multiple_keys() {
+        let versioned1 =
+            VersionedValue::new(HashMap::from([("a".to_string(), json!("1"))]));
+        let versioned2 =
+            VersionedValue::new(HashMap::from([("b".to_string(), json!("2"))]));
+        let mut table = HashMap::new();
+        table.insert("k1".to_string(), versioned1.clone());
+        table.insert("k2".to_string(), versioned2.clone());
+        let mut store_map = HashMap::new();
+        store_map.insert("table1".to_string(), table);
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map),
+        });
+
+        let keys_request = KeysRequest {
+            keys: vec!["k1".to_string(), "k3".to_string()],
+        };
+        let json_req = web::Json(keys_request);
+        let path = web::Path::from("table1".to_string());
+        let response = get_multiple_keys(path, json_req, state).await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+
+        assert_eq!(service_resp.response().status(), 200);
+        let result: HashMap<String, VersionedValue> =
+            test::read_body_json(service_resp).await;
+        assert!(result.contains_key("k1"));
+        assert!(!result.contains_key("k3"));
+    }
+
+    #[actix_web::test]
+    async fn test_put_value_internal() {
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(HashMap::new()),
+        });
+        let cluster_data = web::Data::new(ClusterData {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+        });
+        let current_addr = web::Data::new("127.0.0.1:8080".to_string());
+        // Instantiate SubscriptionManager with its required field.
+        let sub_manager =
+            web::Data::new(SubscriptionManager { channels: Default::default() });
+
+        let mut body_map = HashMap::new();
+        body_map.insert("key".to_string(), json!("value"));
+        let body = web::Json(body_map.clone());
+
+        let req = test::TestRequest::default()
+            .insert_header(("X-Internal-Request", "true"))
+            .to_http_request();
+        let path = web::Path::from(("test".to_string(), "k1".to_string()));
+        let response = put_value(
+            req,
+            path,
+            state.clone(),
+            cluster_data,
+            current_addr,
+            sub_manager,
+            body,
+        )
+            .await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+
+        assert_eq!(service_resp.response().status(), 201);
+        let body_resp: VersionedValue = test::read_body_json(service_resp).await;
+        assert_eq!(body_resp.value, body_map);
+
+        // Verify that the key was added locally with version 1.
+        let store_read = state.store.read().await;
+        let table = store_read.get("test").unwrap();
+        let v = table.get("k1").unwrap();
+        assert_eq!(v.value, body_map);
+        assert_eq!(v.version, 1);
+    }
+
+    #[actix_web::test]
+    async fn test_get_value_internal() {
+        let mut table = HashMap::new();
+        let mut value_map = HashMap::new();
+        value_map.insert("field".to_string(), json!("test value"));
+        let versioned = VersionedValue::new(value_map);
+        table.insert("k1".to_string(), versioned.clone());
+        let mut store_map = HashMap::new();
+        store_map.insert("test".to_string(), table);
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map),
+        });
+
+        // Cluster data is not used for internal lookups.
+        let cluster_data = web::Data::new(ClusterData {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+        });
+        let current_addr = web::Data::new("127.0.0.1:8080".to_string());
+
+        let req = test::TestRequest::default()
+            .insert_header(("X-Internal-Request", "true"))
+            .to_http_request();
+        let path = web::Path::from(("test".to_string(), "k1".to_string()));
+        let response = get_value(req, path, state, cluster_data, current_addr).await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+
+        assert_eq!(service_resp.response().status(), 200);
+        let body: Option<VersionedValue> = test::read_body_json(service_resp).await;
+        assert_eq!(body, Some(versioned));
+    }
+
+    #[actix_web::test]
+    async fn test_delete_value_internal() {
+        let mut table = HashMap::new();
+        let mut value_map = HashMap::new();
+        value_map.insert("a".to_string(), json!("b"));
+        let versioned = VersionedValue::new(value_map);
+        table.insert("k1".to_string(), versioned);
+        let mut store_map = HashMap::new();
+        store_map.insert("table1".to_string(), table);
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map),
+        });
+        let cluster_data = web::Data::new(ClusterData {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+        });
+        let current_addr = web::Data::new("127.0.0.1:8080".to_string());
+        let sub_manager =
+            web::Data::new(SubscriptionManager { channels: Default::default() });
+
+        let req = test::TestRequest::default()
+            .insert_header(("X-Internal-Request", "true"))
+            .to_http_request();
+        let path = web::Path::from(("table1".to_string(), "k1".to_string()));
+        let response = delete_value(
+            req,
+            path,
+            state.clone(),
+            cluster_data,
+            current_addr,
+            sub_manager,
+        )
+            .await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+        assert_eq!(service_resp.response().status(), 200);
+        let body_json: serde_json::Value = test::read_body_json(service_resp).await;
+        let store_read = state.store.read().await;
+        let tbl = store_read.get("table1").unwrap();
+        assert!(!tbl.contains_key("k1"));
+        assert_eq!(body_json.get("message").unwrap(), "Deleted");
+    }
+
+    #[actix_web::test]
+    async fn test_join_cluster_success() {
+        unsafe {
+            env::set_var("CLUSTER_SECRET", "test_secret");
+        }
+        let cluster = web::Data::new(ClusterData {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+        });
+        let join_request = JoinRequest {
+            node: "127.0.0.1:8080".to_string(),
+            secret: "test_secret".to_string(),
+        };
+        let json_req = web::Json(join_request);
+        let response = join_cluster(cluster.clone(), json_req).await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+        assert_eq!(service_resp.response().status(), 200);
+        let nodes: HashMap<String, NodeInfo> = test::read_body_json(service_resp).await;
+        assert!(nodes.contains_key("127.0.0.1:8080"));
+    }
+
+    #[actix_web::test]
+    async fn test_join_cluster_failure() {
+        unsafe {
+            env::set_var("CLUSTER_SECRET", "test_secret");
+        }
+        let cluster = web::Data::new(ClusterData {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+        });
+        let join_request = JoinRequest {
+            node: "127.0.0.1:8080".to_string(),
+            secret: "wrong_secret".to_string(),
+        };
+        let json_req = web::Json(join_request);
+        let response = join_cluster(cluster, json_req).await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+        assert_eq!(service_resp.response().status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn test_get_global_store_success() {
+        unsafe {
+            env::set_var("CLUSTER_SECRET", "test_secret");
+        }
+        let mut store_map = HashMap::new();
+        store_map.insert("table1".to_string(), HashMap::new());
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(store_map.clone()),
+        });
+        let req = test::TestRequest::default()
+            .insert_header(("x-api-key", "test_secret"))
+            .to_http_request();
+        let response = get_global_store(req, state).await;
+
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+        assert_eq!(service_resp.response().status(), 200);
+        let out_store: HashMap<String, HashMap<String, VersionedValue>> =
+            test::read_body_json(service_resp).await;
+        assert_eq!(out_store, store_map);
+    }
+
+    #[actix_web::test]
+    async fn test_get_global_store_invalid_key() {
+        unsafe {
+            env::set_var("CLUSTER_SECRET", "test_secret");
+        }
+        let state = web::Data::new(AppState {
+            base_dir: "/tmp",
+            store: RwLock::new(HashMap::new()),
+        });
+        let req = test::TestRequest::default()
+            .insert_header(("x-api-key", "invalid"))
+            .to_http_request();
+        let response = get_global_store(req, state).await;
+        let dummy_req = test::TestRequest::default().to_http_request();
+        let http_resp = response.respond_to(&dummy_req).map_into_boxed_body();
+        let service_resp = ServiceResponse::new(dummy_req, http_resp);
+        assert_eq!(service_resp.response().status(), 401);
+    }
+}
