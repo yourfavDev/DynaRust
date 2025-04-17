@@ -50,10 +50,10 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
 
 - **Transport Security (HTTPS):**
-    - All communication is secured with HTTPS by default.
+    - All communication is secured with HTTPS (if enabled).
     - **Easy Certificate Generation:**
         - Run `bash cert.sh`, provide a password, and a `.p12` certificate will be generated under the `cert/` directory.
-    - **Testing Mode:**
+    - **How to enable HTTPS Mode:**
         - Set `DYNA_MODE=https` to enable HTTPS
 
 ---
