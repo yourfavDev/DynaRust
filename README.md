@@ -1,10 +1,10 @@
-# 🦀 DynaRust: Distributed Key-Value Store
+<h1 align="center">🦀 DynaRust: Distributed Key-Value Store</h1>
 
-DynaRust is a distributed key‑value store built in Rust 🦀. It's designed to be reliable 💪 and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
+DynaRust is a distributed key‑value store built in Rust. It's designed to be reliable and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
 
-Think of it as a shared dictionary 📚 spread across multiple computers 💻↔️💻. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API 🔌. DynaRust automatically copies your data across available nodes for high availability ✅ and synchronizes changes over time (eventual consistency). It stores data in memory for speed ⚡️ and persists it to disk (`storage.db`) 💾 so your data remains safe even if a node restarts.
+Think of it as a shared dictionary spread across multiple computers 💻↔️💻. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API 🔌. DynaRust automatically copies your data across available nodes for high availability and synchronizes changes over time (eventual consistency). It stores data in memory for speed ⚡️ and persists it to disk (`storage.db`) so your data remains safe even if a node restarts.
 
-With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections** 🔥—and you can increase capacity even further simply by adding more nodes to your cluster!
+With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections**—and you can increase capacity even further simply by adding more nodes to your cluster!
 
 ---
 ## Performance
