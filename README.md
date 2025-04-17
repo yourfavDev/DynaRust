@@ -39,9 +39,30 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     *   **Use Case Example:** Imagine a web UI needing push notifications. Store device IDs as keys in a `devices` table. Use a separate `status` key in the same table. The frontend listens to `devices/subscribe/status`. The backend iterates through device keys, performs actions, and updates the `status` key, instantly notifying all listening frontends. Simple and blazing fast! ⚡️
 
 *   **🔒 Security:**
-    Each record needs a Authorization header for PUT, DELETE operations, each record has an owner field. Metodology is: anyone can read, only the owner can write or delete
-    Each node requires a "secret" token (set by the `CLUSTER_SECRET` environment variable) to join a cluster.
+    Certainly! Here’s a more polished and highlighted version of the **Security** section, emphasizing clarity and best practices:
 
+---
+
+### 🔒 **Security**
+
+- **Access Control:**
+    - **Read:** Anyone can read records.
+    - **Write/Delete:** Only the record’s owner (as specified in the `owner` field) can modify or delete it.
+    - **Enforcement:** All `PUT` and `DELETE` operations require an `Authorization` header. The server verifies that the requester matches the record’s owner.
+
+- **Cluster Security:**
+    - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
+
+- **Transport Security (HTTPS):**
+    - All communication is secured with HTTPS by default.
+    - **Easy Certificate Generation:**
+        - Run `bash cert.sh`, provide a password, and a `.p12` certificate will be generated under the `cert/` directory.
+    - **Testing Mode:**
+        - Set `DYNA_MODE=http` to disable HTTPS (for testing only; **not recommended for production**).
+
+---
+
+**_Security is enforced at every layer: from user access to node-to-node communication, ensuring your data remains private and protected._**
 *   **🌐 Distributed Storage:**
     Data is automatically partitioned and spread across all nodes in the cluster.
 
