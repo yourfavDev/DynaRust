@@ -176,12 +176,12 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
    - `404 Not Found` if table missing  
 
 6. **🔑 List or Batch‑Fetch Keys**  
-   6.1 **GET** `/default/keys`  
+   6.1 **GET** `/{table}/keys`  
        • `200 OK` →  
          ```json
          ["key1","key2",…]
          ```  
-   6.2 **POST** `/default/keys`  
+   6.2 **POST** `/{table}/keys`  
        - Body:  
          ```json
          ["key1","key2","key3"]
@@ -197,7 +197,7 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
 
 7. **🔔 Subscribe to Real‑Time Updates (SSE)**  
    Instant updates on a single key.  
-   - URL: `/default/subscribe/mykey`  
+   - URL: `/{table}/subscribe/mykey`  
    - Usage:  
      ```bash
      curl -N http://localhost:6660/default/subscribe/mykey
