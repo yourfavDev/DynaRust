@@ -58,7 +58,7 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     - **Easy Certificate Generation:**
         - Run `bash cert.sh`, provide a password, and a `.p12` certificate will be generated under the `cert/` directory.
     - **Testing Mode:**
-        - Set `DYNA_MODE=http` to disable HTTPS (for testing only; **not recommended for production**).
+        - Set `DYNA_MODE=https` to enable HTTPS
 
 ---
 

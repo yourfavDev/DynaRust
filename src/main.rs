@@ -187,8 +187,8 @@ async fn main() -> std::io::Result<()> {
 
 
     let use_https = match env::var("DYNA_MODE").unwrap_or_default().as_str() {
-        "http" => false,
-        _ => true
+        "https" => true,
+        _ => false
     };
     match use_https {
         true => {
