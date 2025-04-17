@@ -310,11 +310,11 @@ DynaRust uses eventual consistency via state synchronization:
                +------------------------------------+
                           │
                           │ periodic
-                          │ snapshot & WAL
+                          │ snapshot
                           ↓
                +-----------------------+
                |  Disk Persistence     |
-               |  (cold_save, WAL)     |
+               |  (cold_save)     |
                |         💾            |
                +-----------------------+
 
@@ -332,7 +332,7 @@ Legend:
  • In‐Memory Store: local hashmaps of VersionedValue {value,version,timestamp,owner}.
  • Replication Module: fan‑out writes to peers using `X-Internal-Request`.
  • Other Nodes: receive internal requests, update memstore (no auth, no events).
- • Disk Persistence: periodic snapshots + WAL for durability.
+ • Disk Persistence: periodic snapshots
  • Cluster Membership: heartbeat sync via broadcaster tasks for node discovery.
  • SSE Subscriptions: real‐time `EventSource` streams on `/subscribe/{key}`.
 
