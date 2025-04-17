@@ -38,7 +38,8 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 
     *   **Use Case Example:** Imagine a web UI needing push notifications. Store device IDs as keys in a `devices` table. Use a separate `status` key in the same table. The frontend listens to `devices/subscribe/status`. The backend iterates through device keys, performs actions, and updates the `status` key, instantly notifying all listening frontends. Simple and blazing fast! ⚡️
 
-*   **🔒 Cluster Security:**
+*   **🔒 Security:**
+    Each record needs a Authorization header for PUT, DELETE operations, each record has an owner field. Metodology is: anyone can read, only the owner can write or delete
     Each node requires a "secret" token (set by the `CLUSTER_SECRET` environment variable) to join a cluster.
 
 *   **🌐 Distributed Storage:**

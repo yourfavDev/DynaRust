@@ -1,6 +1,7 @@
 mod storage;
 mod network;
 mod tokenizer;
+mod security;
 
 use actix_web::{web, App, HttpServer};
 use once_cell::sync::OnceCell;
@@ -200,6 +201,7 @@ async fn main() -> std::io::Result<()> {
             .route("/{table}/subscribe/{key}", web::get().to(
                 storage::subscription::subscribe_to_key
             ))
+            .route("/auth/{user}", web::post().to(security::authentication::access))
     })
         .bind(bind_addr.as_str())?
         .run()
