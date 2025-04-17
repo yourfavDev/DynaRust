@@ -61,7 +61,321 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     A simple HTTP interface (using `GET`, `PUT`, `DELETE`) makes it easy to interact with your data.
 
 ---
+### Updated API Endpoints (v2)
 
+All operations except **GET** require a valid JWT in the `Authorization: Bearer <token>` header.
+
+1. **🛂 Register / Log In (HTTP POST)**  
+   Register a new user or log in an existing one.  
+   - URL: `/auth/{user}`  
+   - Body:  
+     ```json
+     { "secret": "my_password" }
+     ```  
+   - Responses:  
+     • `200 OK` and  
+       - On first call (user didn’t exist):  
+         ```json
+         { "status": "User created" }
+         ```  
+       - On subsequent calls with correct secret:  
+         ```json
+         { "token": "<JWT‑TOKEN‑HERE>" }
+         ```  
+     • `400 Bad Request` if user exists on register  
+     • `401 Unauthorized` if secret is wrong  
+
+2. **✍️ Store or Update a Value (HTTP PUT)**  
+   Create or update a value under `{table}/{key}`.  
+   - URL: `/default/key/mykey`  
+   - Headers:  
+     ```
+     Content-Type: application/json  
+     Authorization: Bearer <JWT‑TOKEN>
+     ```  
+   - Body:  
+     ```json
+     { "value": "mydata" }
+     ```  
+   - Success:  
+     • `201 Created`  
+     • Body (VersionedValue):  
+       ```json
+       {
+         "value": "mydata",
+         "version": 1,
+         "timestamp": 1618880821123,
+         "owner": "alice"
+       }
+       ```  
+   - Errors:  
+     • `401 Unauthorized` if missing/invalid JWT or not owner on update  
+
+3. **🔍 Retrieve a Value (HTTP GET)**  
+   Anyone can fetch a key’s latest value.  
+   - URL: `/default/key/mykey`  
+   - Success:  
+     • `200 OK`  
+     • Body:  
+       ```json
+       {
+         "value": "mydata",
+         "version": 1,
+         "timestamp": 1618880821123,
+         "owner": "alice"
+       }
+       ```  
+     • `404 Not Found` if key/table missing  
+
+4. **🗑️ Delete a Value (HTTP DELETE)**  
+   Only the owner may delete.  
+   - URL: `/default/key/mykey`  
+   - Header:  
+     ```
+     Authorization: Bearer <JWT‑TOKEN>
+     ```  
+   - Success:  
+     • `200 OK`  
+     • Body:  
+       ```json
+       { "message": "Deleted locally" }
+       ```  
+   - Errors:  
+     • `401 Unauthorized` if no JWT or not owner  
+     • `404 Not Found` if key/table missing  
+
+5. **📚 Fetch Entire Table Store (HTTP GET)**  
+   List all key→VersionedValue pairs in a table.  
+   - URL: `/default/store`  
+   - Success:  
+     • `200 OK`  
+     • Body:  
+       ```json
+       {
+         "key1": { "value":"v1","version":2,…,"owner":"bob" },
+         "key2": { … }
+       }
+       ```  
+   - `404 Not Found` if table missing  
+
+6. **🔑 List or Batch‑Fetch Keys**  
+   6.1 **GET** `/default/keys`  
+       • `200 OK` →  
+         ```json
+         ["key1","key2",…]
+         ```  
+   6.2 **POST** `/default/keys`  
+       - Body:  
+         ```json
+         ["key1","key2","key3"]
+         ```  
+       - `200 OK` →  
+         ```json
+         {
+           "key1": { "value":"v1","version":… },
+           "key3": { … }
+         }
+         ```  
+       (non‑existent keys are omitted)
+
+7. **🔔 Subscribe to Real‑Time Updates (SSE)**  
+   Instant updates on a single key.  
+   - URL: `/default/subscribe/mykey`  
+   - Usage:  
+     ```bash
+     curl -N http://localhost:6660/default/subscribe/mykey
+     ```  
+   - Each update is a JSON event:  
+     ```json
+     { "event": "Updated", "value": { … } }
+     ```
+
+---
+
+#### Quick `curl` Examples
+
+```bash
+# 1) Register Alice
+curl -i -X POST http://localhost:6660/auth/alice \
+  -H "Content-Type: application/json" \
+  -d '{"secret":"s3cr3t"}'
+
+# 2) Log in (get token)
+TOKEN=$(curl -s -X POST http://localhost:6660/auth/alice \
+  -H "Content-Type: application/json" \
+  -d '{"secret":"s3cr3t"}' | jq -r .token)
+
+# 3) PUT (must include token)
+curl -i -X PUT http://localhost:6660/default/key/foo \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"value":"hello"}'
+
+# 4) GET
+curl -i http://localhost:6660/default/key/foo
+
+# 5) DELETE (owner only)
+curl -i -X DELETE http://localhost:6660/default/key/foo \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+> ⚠️ PUT/DELETE without a valid JWT → **401 Unauthorized**  
+> 🔍 GET is always open (no auth needed).
+---
+
+## 🧠 How it Works (Conceptual Overview)
+
+DynaRust uses eventual consistency via state synchronization:
+
+1.  **👤 Client Request:** A client sends an HTTP request (e.g., `PUT /default/key/mykey`) to any node.
+2.  **🖥️ Local Processing:** The receiving node updates/reads its **in‑memory** store 💭 immediately.
+3.  **💾 Persistence:** The node periodically saves its memory state to `storage.db` for durability.
+4.  **🔄 Cluster Synchronization (Gossip):**
+    *   Nodes exchange membership info & state updates periodically.
+    *   This ensures all nodes eventually converge to the same state (Eventual Consistency).
+    *   *Real‑time Updates:* Subscribed clients receive changes via SSE instantly (< 5ms) ⚡️.
+    *   **🚀 Performance Highlight:** A typical VPS node (1GB RAM, 100Mbps) handles up to **5000 concurrent live SSE connections**. Add more nodes to scale capacity!
+5.  **🤝 Joining:** A new node contacts an existing node (`JOIN_ADDRESS`), fetches the cluster state, and joins.
+
+```ascii
+                    +----------------+
+                    |    Client      |
+                    |     👤         |
+                    +----------------+
+                        │ │   │ │
+     HTTP: POST /auth   │ │   │ │ HTTP: PUT/GET/DELETE /{table}/key/{key}
+     (register/login)   │ │   │ │
+                        ↓ ↓   ↓ ↓
+               +-----------------------+
+               |  API Gateway (Actix)  |
+               |  • /auth/{user}       | ←── issues JWT on login
+               |    - registration      |
+               |    - login → JWT      |
+               |  • KV endpoints       |
+               |    - JWT guard on PUT/DELETE
+               |    - GET open to all   |
+               |  • /{table}/store,    |
+               |    /{table}/keys      |
+               |  • /{table}/subscribe │ ←── SSE subscription
+               +-----------------------+
+                          │
+                          │ local reads/writes
+                          ↓
+               +-----------------------+
+               |  In‐Memory Store      |
+               |  (HashMap<String,     |
+               |   HashMap<String,     |
+               |   VersionedValue>)    |
+               |         💭            |
+               +-----------------------+
+                  │           │
+      internal    │           │ external
+      writes  ←───┘           │   writes
+      (X-Internal-Request)    │
+                             ↓
+               +-----------------------+
+               |  Replication Module   |
+               |  (Fan‐out PUT/DEL to  |
+               |   all other nodes via |
+               |   HTTP + X-Internal)  |
+               +-----------------------+
+                  │           │
+                  │ gossip    │ HTTP
+                  │           ↓
+               +------------------------------------+
+               |     Other Nodes (Replicas)         |
+               |     — apply internal writes —      |
+               |                                    |
+               +------------------------------------+
+                          │
+                          │ periodic
+                          │ snapshot & WAL
+                          ↓
+               +-----------------------+
+               |  Disk Persistence     |
+               |  (cold_save, WAL)     |
+               |         💾            |
+               +-----------------------+
+
+Cluster Membership & Gossip (Eventual Consistency)
+──────────────────────────────────────────────────
+    ┌───────────────┐        gossip(UDP/HTTP)      ┌───────────────┐
+    │ Current Node  │  ── heartbeat & membership ─│ Other Node    │
+    │  (ClusterData)│  ──────────────────────────>│  (ClusterData)│
+    └───────────────┘  <─────────────────────────┘───────────────┘
+           🔄                                            🔄
+
+Legend:
+ • Client: issues HTTP requests (and SSE connects).
+ • API Gateway: Actix routes, JWT auth, validation, SubscriptionManager.
+ • In‐Memory Store: local hashmaps of VersionedValue {value,version,timestamp,owner}.
+ • Replication Module: fan‑out writes to peers using `X-Internal-Request`.
+ • Other Nodes: receive internal requests, update memstore (no auth, no events).
+ • Disk Persistence: periodic snapshots + WAL for durability.
+ • Cluster Membership: heartbeat sync via broadcaster tasks for node discovery.
+ • SSE Subscriptions: real‐time `EventSource` streams on `/subscribe/{key}`.
+
+```
+
+---
+
+## 🐳 Deployment with Docker
+
+Docker simplifies deployment and dependency management.
+
+### 🔧 Prerequisites
+
+*   **Docker:** Version 20.10 or newer installed and running.
+*   **🌐 Network Connectivity:** Ensure containers on the same Docker network can reach each other on the `LISTEN_ADDRESS` port (e.g., `6660`).
+
+### ▶️ Steps
+
+1.  **🧱 Build the Image (if not done):**
+    ```bash
+    docker build -t dynarust:latest .
+    ```
+
+2.  **🏃 Run the Container(s):**
+
+    *   **Running the First Node:**
+        ```bash
+        # Create a network first (recommended)
+        docker network create dynanet
+
+        # Start the first node, detached (-d), named, on the network, mapping host port 6660
+        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
+          dynarust:latest 0.0.0.0:6660
+        ```
+        *Listens on port 6660 inside the container.*
+
+    *   **Running Additional Nodes:**
+        Use the container name (`dynarust-node1`) and internal port (`6660`) as the `JOIN_ADDRESS`.
+        ```bash
+        # Start a second node, map host port 6661, join node1
+        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
+          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
+        ```
+
+    *   **💾 Data Persistence (Important!):**
+        Mount a volume to persist the `storage.db` file outside the container.
+        ```bash
+        # Create a named volume (e.g., dynarust-data1)
+        docker volume create dynarust-data1
+
+        # Run node1 with the volume mounted to /app (where storage.db is saved)
+        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
+          -v dynarust-data1:/app \
+          dynarust:latest 0.0.0.0:6660
+
+        # Run subsequent nodes with their own volumes
+        docker volume create dynarust-data2
+        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
+          -v dynarust-data2:/app \
+          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
+        ```
+        *(Adjust the mount source/target `/app` if your Dockerfile places `storage.db` elsewhere).*
+
+---
 ## 🚀 Getting Started
 
 Follow these steps to get DynaRust running on your local machine or server.
@@ -139,9 +453,6 @@ If you prefer containerization and have Docker installed:
     docker build -t dynarust:latest .
     ```
     This command builds a container image named `dynarust` with the tag `latest`.
-
-*(See the [🐳 Deployment with Docker](#-deployment-with-docker) section for running the container.)*
-
 ---
 
 ## ▶️ Running DynaRust
@@ -186,160 +497,7 @@ Interact with your DynaRust cluster using standard HTTP requests. Send requests 
 *   Replace `localhost:6660` in examples with the actual `LISTEN_ADDRESS` of a running node.
 *   Replace `{table}` with your desired table name (e.g., `default`, `users`, `products`). If omitted, the `"default"` table is used implicitly in older versions, but explicit use is recommended.
 *   For `PUT` requests, the body **must** be JSON (e.g., `{"value": "your-data"}`) and the `Content-Type: application/json` header must be set.
-
 ---
-
-### API Endpoints
-
-All key‑value operations are scoped under a table name (`{table}`).
-
-1.  **✍️ Store or Update a Value (HTTP PUT):**
-    Creates or updates a key's value within `{table}`.
-    ```bash
-    # Example: Store 'mydata' for key 'mykey' in the 'default' table
-    curl -X PUT http://localhost:6660/default/key/mykey \
-      -H "Content-Type: application/json" \
-      -d '{"value": "mydata"}'
-    ```
-    *Response: `200 OK` on success.*
-
-2.  **🔍 Retrieve a Value (HTTP GET):**
-    Retrieves the value for `{key}` in `{table}`.
-    ```bash
-    # Example: Get value for 'mykey' in the 'default' table
-    curl http://localhost:6660/default/key/mykey
-    ```
-    *Response: `{"value": "mydata"}` (if found) or `404 Not Found`.*
-
-3.  **🗑️ Delete a Value (HTTP DELETE):**
-    Removes `{key}` (and its value) from `{table}`.
-    ```bash
-    # Example: Delete 'mykey' from the 'default' table
-    curl -X DELETE http://localhost:6660/default/key/mykey
-    ```
-    *Response: `200 OK` (if deleted) or `404 Not Found`.*
-
-4.  **📚 Fetch Entire Table Store (HTTP GET):**
-    Returns all key‑value pairs stored in `{table}`.
-    ```bash
-    # Example: Get all data from the 'default' table
-    curl http://localhost:6660/default/store
-    ```
-    *Response: A JSON object `{ "key1": "value1", "key2": "value2", ... }`.*
-
-5.  **🔑 Retrieve Table Keys (HTTP GET/POST):**
-    *   **GET:** Retrieves all keys for `{table}`.
-        ```bash
-        # Example: Get all keys from the 'default' table
-        curl http://localhost:6660/default/keys
-        ```
-        *Response: `["key1", "key2", ...]`*
-    *   **POST:** Retrieve values for multiple specific keys in `{table}`.
-        ```bash
-        # Example: Get values for 'key1', 'key2', 'key3' from the 'default' table
-        curl -X POST http://localhost:6660/default/keys \
-          -H "Content-Type: application/json" \
-          -d '["key1", "key2", "key3"]'
-        ```
-        *Response: `{ "key1": "value1", "key2": "value2", ... }` (Keys not found are omitted).*
-
-6.  **🔔 Subscribe to Real‑Time Updates (HTTP GET):**
-    Connect using Server‑Sent Events (SSE) for instant updates on `{key}` within `{table}`.
-    ```bash
-    # Example: Subscribe to updates for 'mykey' in the 'default' table
-    curl -N http://localhost:6660/default/subscribe/mykey
-    ```
-    *Live changes (< 5 ms)! A single node handles up to **5000 live connections** 🔥. Scale by adding nodes!*
-
----
-
-## 🧠 How it Works (Conceptual Overview)
-
-DynaRust uses eventual consistency via state synchronization:
-
-1.  **👤 Client Request:** A client sends an HTTP request (e.g., `PUT /default/key/mykey`) to any node.
-2.  **🖥️ Local Processing:** The receiving node updates/reads its **in‑memory** store 💭 immediately.
-3.  **💾 Persistence:** The node periodically saves its memory state to `storage.db` for durability.
-4.  **🔄 Cluster Synchronization (Gossip):**
-    *   Nodes exchange membership info & state updates periodically.
-    *   This ensures all nodes eventually converge to the same state (Eventual Consistency).
-    *   *Real‑time Updates:* Subscribed clients receive changes via SSE instantly (< 5ms) ⚡️.
-    *   **🚀 Performance Highlight:** A typical VPS node (1GB RAM, 100Mbps) handles up to **5000 concurrent live SSE connections**. Add more nodes to scale capacity!
-5.  **🤝 Joining:** A new node contacts an existing node (`JOIN_ADDRESS`), fetches the cluster state, and joins.
-
-```ascii
-+--------+       +-------------------+       +-----------------+
-| Client | ----> | Node API Endpoint | ----> | In-Memory Store | ----+
-|   👤   |       | (Processes Req.)  |       |  (Local State)💭|     |
-+--------+       +-------------------+       +-----------------+     |
-     ^             (HTTP: PUT/GET/DEL)           |                 v
-     |                                             |         (Periodic Save)
-     | (Gossip: Membership & State 🔄)       +--------------+   +-----------------+
-     +-------- Cluster Synchronization ----- | Other Nodes  |   | Disk Persistence|
-             (Eventual Consistency)         |    💻↔️💻     |   |  (storage.db) 💾|
-                                            +--------------+   +-----------------+
-```
-
----
-
-## 🐳 Deployment with Docker
-
-Docker simplifies deployment and dependency management.
-
-### 🔧 Prerequisites
-
-*   **Docker:** Version 20.10 or newer installed and running.
-*   **🌐 Network Connectivity:** Ensure containers on the same Docker network can reach each other on the `LISTEN_ADDRESS` port (e.g., `6660`).
-
-### ▶️ Steps
-
-1.  **🧱 Build the Image (if not done):**
-    ```bash
-    docker build -t dynarust:latest .
-    ```
-
-2.  **🏃 Run the Container(s):**
-
-    *   **Running the First Node:**
-        ```bash
-        # Create a network first (recommended)
-        docker network create dynanet
-
-        # Start the first node, detached (-d), named, on the network, mapping host port 6660
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          dynarust:latest 0.0.0.0:6660
-        ```
-        *Listens on port 6660 inside the container.*
-
-    *   **Running Additional Nodes:**
-        Use the container name (`dynarust-node1`) and internal port (`6660`) as the `JOIN_ADDRESS`.
-        ```bash
-        # Start a second node, map host port 6661, join node1
-        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
-          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-
-    *   **💾 Data Persistence (Important!):**
-        Mount a volume to persist the `storage.db` file outside the container.
-        ```bash
-        # Create a named volume (e.g., dynarust-data1)
-        docker volume create dynarust-data1
-
-        # Run node1 with the volume mounted to /app (where storage.db is saved)
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          -v dynarust-data1:/app \
-          dynarust:latest 0.0.0.0:6660
-
-        # Run subsequent nodes with their own volumes
-        docker volume create dynarust-data2
-        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
-          -v dynarust-data2:/app \
-          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-        *(Adjust the mount source/target `/app` if your Dockerfile places `storage.db` elsewhere).*
-
----
-
 ## 🆘 Troubleshooting
 
 Encountering issues? Check these common points:
