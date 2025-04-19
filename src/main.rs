@@ -83,17 +83,6 @@ async fn main() -> std::io::Result<()> {
         Ok(_) => println!("Cold storage loaded"),
         Err(e) => eprintln!("Error loading cold storage: {}", e),
     }
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder
-        .set_private_key_file("./cert/server.key", SslFiletype::PEM)
-        .unwrap();
-    builder
-        .set_certificate_chain_file("./cert/server.crt")
-        .unwrap();
-    builder
-        .set_ca_file("./cert/ca.crt")
-        .unwrap();
-    builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
 
     // (Optionally) Ensure the default table exists in memory.
     {
@@ -194,6 +183,17 @@ async fn main() -> std::io::Result<()> {
     };
     match use_https {
         true => {
+            let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+            builder
+                .set_private_key_file("./cert/server.key", SslFiletype::PEM)
+                .unwrap();
+            builder
+                .set_certificate_chain_file("./cert/server.crt")
+                .unwrap();
+            builder
+                .set_ca_file("./cert/ca.crt")
+                .unwrap();
+            builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
             println!("Starting distributed DB engine at https://{}", current_node);
 
             // Build and run the HTTP server.
