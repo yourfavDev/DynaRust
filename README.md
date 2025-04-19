@@ -1,10 +1,10 @@
-<h1 align="center">🦀 DynaRust: Distributed Key-Value Store</h1>
+# 🦀 DynaRust: Distributed Key-Value Store
 
-DynaRust is a distributed key‑value store built in Rust. It's designed to be reliable and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
+DynaRust is a distributed key‑value store built in Rust 🦀. It's designed to be reliable 💪 and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
 
-Think of it as a shared dictionary spread across multiple computers 💻↔️💻. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API 🔌. DynaRust automatically copies your data across available nodes for high availability and synchronizes changes over time (eventual consistency). It stores data in memory for speed ⚡️ and persists it to disk (`storage.db`) so your data remains safe even if a node restarts.
+Think of it as a shared dictionary 📚 spread across multiple computers 💻↔️💻. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API 🔌. DynaRust automatically copies your data across available nodes for high availability ✅ and synchronizes changes over time (eventual consistency). It stores data in memory for speed ⚡️ and persists it to disk (`storage.db`) 💾 so your data remains safe even if a node restarts.
 
-With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections**—and you can increase capacity even further simply by adding more nodes to your cluster!
+With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections** 🔥—and you can increase capacity even further simply by adding more nodes to your cluster!
 
 ---
 ## Performance
@@ -38,6 +38,10 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 
     *   **Use Case Example:** Imagine a web UI needing push notifications. Store device IDs as keys in a `devices` table. Use a separate `status` key in the same table. The frontend listens to `devices/subscribe/status`. The backend iterates through device keys, performs actions, and updates the `status` key, instantly notifying all listening frontends. Simple and blazing fast! ⚡️
 
+*   **🔒 Security:**
+    Certainly! Here’s a more polished and highlighted version of the **Security** section, emphasizing clarity and best practices:
+
+---
 
 ### 🔒 **Security**
 
@@ -50,10 +54,10 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
 
 - **Transport Security (HTTPS):**
-    - All communication is secured with HTTPS (if enabled).
+    - All communication is secured with HTTPS by default.
     - **Easy Certificate Generation:**
         - Run `bash cert.sh`, provide a password, and a `.p12` certificate will be generated under the `cert/` directory.
-    - **How to enable HTTPS Mode:**
+    - **Testing Mode:**
         - Set `DYNA_MODE=https` to enable HTTPS
 
 ---
@@ -61,6 +65,11 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 **_Security is enforced at every layer: from user access to node-to-node communication, ensuring your data remains private and protected._**
 *   **🌐 Distributed Storage:**
     Data is automatically partitioned and spread across all nodes in the cluster.
+
+*   **🗄️ Automatic Snapshots:**
+    Every 60 minutes DynaRust writes a JSON snapshot of the entire in‑memory store to `./snapshots/snapshot_<ts>.json`.
+    By default only the last 100 snapshots are kept; older files are pruned automatically.
+    You can override the retention limit with the `SNAP_LIMIT` environment variable (e.g. `SNAP_LIMIT=200`).
 
 *   **✅ High Availability:**
     If one node fails, the remaining nodes continue to serve requests for the available data.
@@ -176,12 +185,12 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
    - `404 Not Found` if table missing  
 
 6. **🔑 List or Batch‑Fetch Keys**  
-   6.1 **GET** `/{table}/keys`  
+   6.1 **GET** `/default/keys`  
        • `200 OK` →  
          ```json
          ["key1","key2",…]
          ```  
-   6.2 **POST** `/{table}/keys`  
+   6.2 **POST** `/default/keys`  
        - Body:  
          ```json
          ["key1","key2","key3"]
@@ -197,7 +206,7 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
 
 7. **🔔 Subscribe to Real‑Time Updates (SSE)**  
    Instant updates on a single key.  
-   - URL: `/{table}/subscribe/mykey`  
+   - URL: `/default/subscribe/mykey`  
    - Usage:  
      ```bash
      curl -N http://localhost:6660/default/subscribe/mykey
@@ -306,11 +315,11 @@ DynaRust uses eventual consistency via state synchronization:
                +------------------------------------+
                           │
                           │ periodic
-                          │ snapshot
+                          │ snapshot & WAL
                           ↓
                +-----------------------+
                |  Disk Persistence     |
-               |  (cold_save)     |
+               |  (cold_save, WAL)     |
                |         💾            |
                +-----------------------+
 
@@ -328,7 +337,7 @@ Legend:
  • In‐Memory Store: local hashmaps of VersionedValue {value,version,timestamp,owner}.
  • Replication Module: fan‑out writes to peers using `X-Internal-Request`.
  • Other Nodes: receive internal requests, update memstore (no auth, no events).
- • Disk Persistence: periodic snapshots
+ • Disk Persistence: periodic snapshots + WAL for durability.
  • Cluster Membership: heartbeat sync via broadcaster tasks for node discovery.
  • SSE Subscriptions: real‐time `EventSource` streams on `/subscribe/{key}`.
 

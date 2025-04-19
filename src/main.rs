@@ -20,6 +20,7 @@ use storage::engine::{
 };
 use storage::persistance::{cold_save, load_all_tables};
 use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
+use crate::storage::snapshoting::start_snapshot_task;
 use crate::storage::subscription::SubscriptionManager;
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
@@ -99,6 +100,7 @@ async fn main() -> std::io::Result<()> {
         let mut store = state.store.write().await;
         store.entry("default".to_string()).or_insert(HashMap::new());
     }
+    start_snapshot_task(state.clone());
 
     // If a join node is provided, join its cluster and merge its global state.
     if args.len() >= 3 {
