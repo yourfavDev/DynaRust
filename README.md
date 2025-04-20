@@ -37,10 +37,6 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     Changes are pushed instantly (< 5 ms latency). On a standard VPS (1GB RAM, 100Mbps), a single node handles up to **5000 simultaneous live connections** 💪. Need more capacity? Just add more nodes!
 
     *   **Use Case Example:** Imagine a web UI needing push notifications. Store device IDs as keys in a `devices` table. Use a separate `status` key in the same table. The frontend listens to `devices/subscribe/status`. The backend iterates through device keys, performs actions, and updates the `status` key, instantly notifying all listening frontends. Simple and blazing fast! ⚡️
-
-*   **🔒 Security:**
-    Certainly! Here’s a more polished and highlighted version of the **Security** section, emphasizing clarity and best practices:
-
 ---
 
 ### 🔒 **Security**
