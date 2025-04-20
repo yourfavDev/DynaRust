@@ -1,8 +1,8 @@
 # 🦀 DynaRust: Distributed Key-Value Store
 
-DynaRust is a distributed key‑value store built in Rust 🦀. It's designed to be reliable 💪 and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
+DynaRust is a distributed key–JSON‑value built in Rust. It's designed to be reliable and easy to manage, allowing you to add or remove nodes (servers) dynamically without interrupting service 🔄.
 
-Think of it as a shared dictionary 📚 spread across multiple computers 💻↔️💻. You can store data (key‑value pairs), retrieve it, and delete it using a simple web API 🔌. DynaRust automatically copies your data across available nodes for high availability ✅ and synchronizes changes over time (eventual consistency). It stores data in memory for speed ⚡️ and persists it to disk (`storage.db`) 💾 so your data remains safe even if a node restarts.
+It combines in‑memory caching, on‑disk persistence, automatic cross‑node replication and background synchronization for eventual consistency, delivering a fault‑tolerant, horizontally scalable datastore.
 
 With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. In fact, on a typical VPS (1 GB RAM, 100 Mbps bandwidth), a single node can comfortably sustain peak traffic of up to **5000 live connections** 🔥—and you can increase capacity even further simply by adding more nodes to your cluster!
 
@@ -402,54 +402,6 @@ Docker simplifies deployment and dependency management.
         *(Adjust the mount source/target `/app` if your Dockerfile places `storage.db` elsewhere).*
 
 ---
-## 🚀 Getting Started
-
-Follow these steps to get DynaRust running on your local machine or server.
-
-### 🛠️ Prerequisites
-
-Install the following before building or running DynaRust:
-
-*   **🦀 Rust:** Version 1.86.0 or newer. (Includes `cargo`—the Rust package manager and build tool.)
-    *   [Install Rust with rustup](https://rustup.rs/).
-
-*   **⚙️ Standard Build Tools:**
-    A C compiler (like `gcc`), `make`, and other common build utilities.
-    *   On Debian/Ubuntu:
-        ```bash
-        sudo apt update && sudo apt install build-essential
-        ```
-    *   On Fedora/CentOS/RHEL:
-        ```bash
-        sudo dnf groupinstall "Development Tools"
-        # or
-        sudo yum groupinstall "Development Tools"
-        ```
-
-*   **🔑 OpenSSL Development Libraries:**
-    *   On Debian/Ubuntu:
-        ```bash
-        sudo apt install libssl-dev
-        ```
-    *   On Fedora/CentOS/RHEL:
-        ```bash
-        sudo dnf install openssl-devel
-        # or
-        sudo yum install openssl-devel
-        ```
-
-*   **🧩 pkg-config:**
-    *   On Debian/Ubuntu:
-        ```bash
-        sudo apt install pkg-config
-        ```
-    *   On Fedora/CentOS/RHEL:
-        ```bash
-        sudo dnf install pkgconf-pkg-config
-        # or
-        sudo yum install pkgconfig
-        ```
-
 ### 📦 Installation
 
 You can either build DynaRust directly from source or use a pre‑built Docker image.
