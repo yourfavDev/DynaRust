@@ -21,6 +21,7 @@ use storage::engine::{
 use storage::persistance::{cold_save, load_all_tables};
 use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
 use crate::storage::snapshoting::start_snapshot_task;
+use crate::storage::statistics::{get_stats, MetricsCollector, MetricsMiddleware};
 use crate::storage::subscription::SubscriptionManager;
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
@@ -176,6 +177,10 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(membership_sync(cluster_clone, current_clone, 60));
     let subscription_manager = web::Data::new(SubscriptionManager::new());
 
+    // Initialize metrics collector and middleware
+    let metrics_collector = web::Data::new(MetricsCollector::new());
+    // extract a clonable handle for the middleware
+    let mw_col = metrics_collector.get_ref().clone();
 
     let use_https = match env::var("DYNA_MODE").unwrap_or_default().as_str() {
         "https" => true,
@@ -199,6 +204,8 @@ async fn main() -> std::io::Result<()> {
             // Build and run the HTTP server.
             HttpServer::new(move || {
                 App::new()
+                    .wrap(MetricsMiddleware::new(mw_col.clone()))
+                    .app_data(metrics_collector.clone())
                     .app_data(subscription_manager.clone())
                     .app_data(state.clone())
                     .app_data(cluster_data.clone())
@@ -223,6 +230,7 @@ async fn main() -> std::io::Result<()> {
                         storage::subscription::subscribe_to_key
                     ))
                     .route("/auth/{user}", web::post().to(security::authentication::access))
+                    .service(get_stats)
             })
                 .bind_openssl(bind_addr.as_str(), builder)?
                 .run()
@@ -232,36 +240,39 @@ async fn main() -> std::io::Result<()> {
             println!("Starting distributed DB engine at http://{}", current_node);
 
             // Build and run the HTTP server.
-        HttpServer::new(move || {
-        App::new()
-        .app_data(subscription_manager.clone())
-        .app_data(state.clone())
-        .app_data(cluster_data.clone())
-        .app_data(web::Data::new(current_node.clone()))
-        // Cluster management endpoints.
-        .route("/join", web::post().to(join_cluster))
-        .route("/membership", web::get().to(get_membership))
-        .route("/update_membership", web::post().to(update_membership))
-        .route("/heartbeat", web::get().to(heartbeat))
-        // Key–value endpoints with multi‑table support.
-        .route("/{table}/key/{key}", web::get().to(get_value))
-        .route("/{table}/key/{key}", web::put().to(put_value))
-        .route("/{table}/key/{key}", web::delete().to(delete_value))
-        // Endpoint to fetch a table’s entire in‑memory store.
-        .route("/{table}/store", web::get().to(get_table_store))
-        // Global endpoint returning the entire in‑memory store.
-        .route("/store", web::get().to(get_global_store))
-        // Endpoints to get keys from a table.
-        .route("/{table}/keys", web::get().to(get_all_keys))
-        .route("/{table}/keys", web::post().to(get_multiple_keys))
-        .route("/{table}/subscribe/{key}", web::get().to(
-        storage::subscription::subscribe_to_key
-        ))
-        .route("/auth/{user}", web::post().to(security::authentication::access))
-        })
-        .bind(bind_addr.as_str())?
-        .run()
-        .await
+            HttpServer::new(move || {
+                App::new()
+                    .wrap(MetricsMiddleware::new(mw_col.clone()))
+                    .app_data(metrics_collector.clone())
+                    .app_data(subscription_manager.clone())
+                    .app_data(state.clone())
+                    .app_data(cluster_data.clone())
+                    .app_data(web::Data::new(current_node.clone()))
+                    // Cluster management endpoints.
+                    .route("/join", web::post().to(join_cluster))
+                    .route("/membership", web::get().to(get_membership))
+                    .route("/update_membership", web::post().to(update_membership))
+                    .route("/heartbeat", web::get().to(heartbeat))
+                    // Key–value endpoints with multi‑table support.
+                    .route("/{table}/key/{key}", web::get().to(get_value))
+                    .route("/{table}/key/{key}", web::put().to(put_value))
+                    .route("/{table}/key/{key}", web::delete().to(delete_value))
+                    // Endpoint to fetch a table’s entire in‑memory store.
+                    .route("/{table}/store", web::get().to(get_table_store))
+                    // Global endpoint returning the entire in‑memory store.
+                    .route("/store", web::get().to(get_global_store))
+                    // Endpoints to get keys from a table.
+                    .route("/{table}/keys", web::get().to(get_all_keys))
+                    .route("/{table}/keys", web::post().to(get_multiple_keys))
+                    .route("/{table}/subscribe/{key}", web::get().to(
+                        storage::subscription::subscribe_to_key
+                    ))
+                    .route("/auth/{user}", web::post().to(security::authentication::access))
+                    .service(get_stats)
+            })
+                .bind(bind_addr.as_str())?
+                .run()
+                .await
         }
     }
 
