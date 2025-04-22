@@ -240,7 +240,7 @@ curl -i -X DELETE http://localhost:6660/default/key/foo \
   -H "Authorization: Bearer $TOKEN"
 
 # 6) Node stats
-curl localhost:8081/stats
+curl http://localhost:6660/stats
 Response:
 {"tables":{"auth":2,"test":20088,"default":1},"total_keys":20091,"total_requests":5,"average_latency_ms":0.4171416,"active_sse_connections":0}
 ```
