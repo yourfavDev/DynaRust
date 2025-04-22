@@ -1,9 +1,11 @@
-// src/statistics.rs
+// src/storage/statistics.rs
+
 use actix_web::{
-    dev::{Service, ServiceRequest, ServiceResponse, Transform},
+    dev::{ServiceRequest, ServiceResponse, Transform},
     get,
-    web::{ Data},
-    HttpResponse, Responder,
+    web::Data,
+    HttpResponse,
+    Responder,
 };
 use futures_util::future::{ok, LocalBoxFuture, Ready};
 use serde::Serialize;
@@ -16,7 +18,8 @@ use std::{
     task::{Context, Poll},
     time::Instant,
 };
-use crate::storage::engine::AppState;
+
+use crate::storage::engine::{AppState, ClusterData};
 use crate::storage::subscription::SubscriptionManager;
 
 /// Holds global counters.
@@ -53,7 +56,7 @@ impl MetricsMiddleware {
 
 impl<S, B> Transform<S, ServiceRequest> for MetricsMiddleware
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>
+    S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>
     + 'static,
     B: 'static,
 {
@@ -76,9 +79,9 @@ pub struct MetricsMiddlewareService<S> {
     collector: MetricsCollector,
 }
 
-impl<S, B> Service<ServiceRequest> for MetricsMiddlewareService<S>
+impl<S, B> actix_web::dev::Service<ServiceRequest> for MetricsMiddlewareService<S>
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>
+    S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>
     + 'static,
     B: 'static,
 {
@@ -94,6 +97,7 @@ where
         let collector = self.collector.clone();
         let start = Instant::now();
         let fut = self.service.call(req);
+
         Box::pin(async move {
             let res = fut.await?;
             let latency = start.elapsed().as_nanos() as u64;
@@ -104,12 +108,20 @@ where
 }
 
 #[derive(Serialize)]
+struct ClusterStats {
+    status: String,
+    last_heartbeat: u128,
+}
+
+#[derive(Serialize)]
 struct StatsResponse {
     tables: HashMap<String, usize>,
     total_keys: usize,
     total_requests: u64,
     average_latency_ms: f64,
     active_sse_connections: usize,
+    /// Current cluster membership with status and last heartbeat
+    cluster: HashMap<String, ClusterStats>,
 }
 
 /// GET /stats
@@ -118,8 +130,9 @@ pub async fn get_stats(
     state: Data<AppState>,
     sub: Data<SubscriptionManager>,
     metrics: Data<MetricsCollector>,
+    cluster_data: Data<ClusterData>,
 ) -> impl Responder {
-    // count keys per table
+    // Count keys per table.
     let store = state.store.read().await;
     let mut tables = HashMap::new();
     let mut total_keys = 0;
@@ -128,27 +141,45 @@ pub async fn get_stats(
         total_keys += map.len();
     }
 
+    // Compute request stats.
     let total_requests = metrics.total_requests.load(Ordering::Relaxed);
     let total_latency_ns = metrics.total_latency_ns.load(Ordering::Relaxed);
-    let avg_latency_ms = if total_requests > 0 {
+    let average_latency_ms = if total_requests > 0 {
         (total_latency_ns as f64 / total_requests as f64) / 1e6
     } else {
         0.0
     };
 
-    // SSE connections = sum of receiver_count() across all channels
+    // Count active SSE connections.
     let channels = sub.channels.read().await;
-    let active_sse_connections = channels
-        .values()
-        .map(|tx| tx.receiver_count())
-        .sum();
+    let active_sse_connections = channels.values().map(|tx| tx.receiver_count()).sum();
+
+    // Build cluster membership map.
+    let cluster = {
+        let nodes = cluster_data.nodes.read().await;
+        nodes
+            .iter()
+            .map(|(addr, info)| {
+                let status_str = format!("{:?}", info.status);
+                (
+                    addr.clone(),
+                    ClusterStats {
+                        status: status_str,
+                        last_heartbeat: info.last_heartbeat,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    };
 
     let resp = StatsResponse {
         tables,
         total_keys,
         total_requests,
-        average_latency_ms: avg_latency_ms,
+        average_latency_ms,
         active_sse_connections,
+        cluster,
     };
+
     HttpResponse::Ok().json(resp)
 }

@@ -295,23 +295,29 @@ pub async fn put_value(
 
     // Internal replication requests bypass authentication.
     if req.headers().contains_key("X-Internal-Request") {
-        let new_value = {
-            let mut store = state.store.write().await;
-            let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
-            if let Some(existing) = table.get_mut(&key_val) {
-                existing.update(body.0.clone());
-                existing.clone()
-            } else {
-                // For internal requests, set owner as "internal"
-                let v = VersionedValue::new(body.0.clone(), "internal".to_string());
-                table.insert(key_val.clone(), v.clone());
-                v
-            }
-        };
-        sub_manager
-            .notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone()))
-            .await;
-        return HttpResponse::Created().json(new_value);
+        if env::var("CLUSTER_SECRET").unwrap_or_default().as_str() == req.headers().get("SECRET").unwrap().to_str().unwrap() {
+            let new_value = {
+                let mut store = state.store.write().await;
+                let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
+                if let Some(existing) = table.get_mut(&key_val) {
+                    existing.update(body.0.clone());
+                    existing.clone()
+                } else {
+                    let user_header = req.headers().get("User").unwrap().to_str().unwrap();
+
+                    // For internal requests, set owner as "internal"
+                    let v = VersionedValue::new(body.0.clone(), String::from(user_header));
+                    table.insert(key_val.clone(), v.clone());
+                    v
+                }
+            };
+            sub_manager
+                .notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone()))
+                .await;
+            return HttpResponse::Created().json(new_value);
+        } else {
+            return HttpResponse::Unauthorized().json(json!({}))
+        }
     }
 
     // External requests require a valid JWT token.
@@ -353,8 +359,10 @@ pub async fn put_value(
 
     let client = reqwest::Client::new();
     let mut replication_futures = Vec::new();
+
     for target in targets {
         if target != *current_addr.get_ref() {
+            let user2 = user.clone();
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
             let value_clone = new_value.clone();
@@ -362,7 +370,9 @@ pub async fn put_value(
                 let result = client_clone
                     .put(&url)
                     .header("X-Internal-Request", "true")
-                    .json(&value_clone)
+                    .header("User", user2.clone())
+                    .header("SECRET", env::var("CLUSTER_SECRET").unwrap_or_default())
+                    .json(&value_clone.value)  // HERE'S THE FIX: Send only the inner value data
                     .timeout(std::time::Duration::from_secs(3))
                     .send()
                     .await;
@@ -378,6 +388,7 @@ pub async fn put_value(
     });
     HttpResponse::Created().json(new_value)
 }
+
 
 /// DELETE handler: Removes a key with an ownership check.
 pub async fn delete_value(
