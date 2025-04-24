@@ -107,7 +107,7 @@ pub fn current_timestamp() -> u128 {
 }
 
 /// Extract active nodes from the cluster membership map.
-fn get_active_nodes(nodes: &HashMap<String, NodeInfo>) -> Vec<String> {
+pub fn get_active_nodes(nodes: &HashMap<String, NodeInfo>) -> Vec<String> {
     nodes
         .iter()
         .filter(|(_, info)| info.status == NodeStatus::Active)
@@ -116,7 +116,7 @@ fn get_active_nodes(nodes: &HashMap<String, NodeInfo>) -> Vec<String> {
 }
 
 /// Computes replication targets for a given key.
-fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize) -> Vec<String> {
+pub fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize) -> Vec<String> {
     if nodes.is_empty() {
         return Vec::new();
     }
