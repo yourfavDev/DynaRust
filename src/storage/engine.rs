@@ -11,7 +11,8 @@ use tokio::sync::RwLock;
 use web::Json;
 use crate::storage::subscription::{KeyEvent, SubscriptionManager};
 use jsonwebtoken::{decode, DecodingKey, Validation};
-
+use tokio::time;
+use crate::network::broadcaster::{gossip_membership};
 //
 // CONSTANTS & TYPES
 //
@@ -559,6 +560,7 @@ pub async fn join_cluster(
     }
 
     let new_node = request.node.clone();
+    let cluster2 = cluster.clone();
     let mut nodes_guard = cluster.nodes.write().await;
     if !nodes_guard.contains_key(&new_node) {
         nodes_guard.insert(
@@ -568,6 +570,14 @@ pub async fn join_cluster(
                 last_heartbeat: current_timestamp(),
             },
         );
+
+        tokio::spawn(async move {
+                time::sleep(std::time::Duration::from_secs(5)).await;
+                let args: Vec<String> = env::args().collect();
+                let current_node = args[1].clone();
+                let client = reqwest::Client::new();
+                gossip_membership(&cluster2, &client, &*current_node).await;
+        });
     }
     HttpResponse::Ok().json(nodes_guard.clone())
 }

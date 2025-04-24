@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 use hex;
 use chrono::{Utc, Duration};
 use std::collections::HashMap;
-use std::env;
 use jsonwebtoken::{encode, Header, EncodingKey};
 
 use crate::storage::engine::{get_active_nodes, get_replication_nodes, AppState, ClusterData, VersionedValue};
