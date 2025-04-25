@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::env;
 use std::process;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use storage::engine::{
     AppState, ClusterData, delete_value, get_value, get_table_store, join_cluster, put_value,
     get_all_keys, get_multiple_keys, NodeInfo, NodeStatus, current_timestamp,
@@ -162,7 +162,13 @@ async fn main() -> std::io::Result<()> {
             }
         }
     }
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
 
+    // 2) Build a semaphore to cap at 20 concurrent replications
+    let sem = Arc::new(Semaphore::new(20));
     // Spawn the periodic cold save task.
     tokio::spawn(cold_save(state.clone(), 30));
 
@@ -216,6 +222,8 @@ async fn main() -> std::io::Result<()> {
                     .app_data(metrics_collector.clone())
                     .app_data(subscription_manager.clone())
                     .app_data(state.clone())
+                    .app_data(web::Data::new(http_client.clone()))
+                    .app_data(web::Data::new(sem.clone()))
                     .app_data(cluster_data.clone())
                     .app_data(web::Data::new(current_node.clone()))
                     // Cluster management endpoints.
@@ -258,6 +266,8 @@ async fn main() -> std::io::Result<()> {
                     .app_data(metrics_collector.clone())
                     .app_data(subscription_manager.clone())
                     .app_data(state.clone())
+                    .app_data(web::Data::new(http_client.clone()))
+                    .app_data(web::Data::new(sem.clone()))
                     .app_data(cluster_data.clone())
                     .app_data(web::Data::new(current_node.clone()))
                     // Cluster management endpoints.
