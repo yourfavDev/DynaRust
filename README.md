@@ -47,8 +47,9 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     - **Enforcement:** All `PUT` and `DELETE` operations require an `Authorization` header. The server verifies that the requester matches the record’s owner.
 
 - **Cluster Security:**
-  - Each node should have a JWT_SECRET set, without this env var the node won't even start
-      - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
+  - At compile time a SHA256 encryption key is embeded in the compiled binary (if that changes somehow in the future (recompile binary with different key) you won't be able to load the table, steps to properly compile are: run bash encryption.sh && cargo build --release and distribute only the binary under target/release/ to your nodes);
+    - Each node should have a JWT_SECRET set, without this env var the node won't even start
+        - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
 
 - **Transport Security (HTTPS):**
     - **Easy Certificate Generation:**

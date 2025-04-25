@@ -2,27 +2,91 @@ use std::collections::HashMap;
 use std::fs::{create_dir_all, File, read_dir};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
+use std::process;
 use std::time::Duration;
 use actix_web::web;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use base64::{engine::general_purpose, Engine as _};
 use tokio::task;
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::{engine::general_purpose, Engine as _};
+use rand_core::OsRng;
+use rand_core::TryRngCore;
 
 use crate::storage::engine::{AppState, VersionedValue};
 
-const ENCRYPTION_KEY: u8 = 0xAA;
+const KEY: &[u8; 32] = include_bytes!(
+    concat!(env!("CARGO_MANIFEST_DIR"), "/encryption.key")
+);
+pub fn encrypt(plain: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize cipher with a 256‐bit key
+    let cipher = Aes256Gcm::new(KEY.into());
 
-fn encrypt(plain: &str) -> String {
-    let encrypted: Vec<u8> = plain.bytes().map(|b| b ^ ENCRYPTION_KEY).collect();
-    general_purpose::STANDARD.encode(&encrypted)
+    // 96‐bit nonce
+    let mut nonce = [0u8; 12];
+    let _ = OsRng.try_fill_bytes(&mut nonce);
+
+    // Encrypt + authenticate - map the error manually
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plain.as_bytes())
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Encryption error: {:?}", e),
+            ))
+        })?;
+
+    // Prefix nonce for storage
+    let mut out = nonce.to_vec();
+    out.extend(ciphertext);
+
+    // Base64‐encode for safe transport/storage
+    Ok(general_purpose::STANDARD.encode(&out))
 }
 
-fn decrypt(encrypted: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let decoded = general_purpose::STANDARD.decode(encrypted)?;
-    let decrypted: Vec<u8> = decoded.into_iter().map(|b| b ^ ENCRYPTION_KEY).collect();
-    Ok(String::from_utf8(decrypted)?)
+pub fn decrypt(encrypted: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // Base64-decode
+    let data = general_purpose::STANDARD
+        .decode(encrypted)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Base64 decode error: {}", e),
+            ))
+        })?;
+
+    // Ensure we have at least enough bytes for the nonce
+    if data.len() < 12 {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Encrypted data too short",
+        )));
+    }
+
+    // Split out the 96‐bit nonce
+    let (nonce, ciphertext) = data.split_at(12);
+    let cipher = Aes256Gcm::new(KEY.into());
+
+    // Decrypt + verify - map the error manually
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Decryption error: {:?}", e),
+            ))
+        })?;
+
+    // Convert bytes to UTF-8 string
+    String::from_utf8(plaintext).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("UTF-8 conversion error: {}", e),
+        ))
+    })
 }
+
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WalEntry {
@@ -58,6 +122,8 @@ pub async fn save_to_cold(state: web::Data<AppState>) -> io::Result<()> {
             create_dir_all(&folder_path)?;
             let file_path = folder_path.join("storage.db");
             let mut file = File::create(&file_path)?;
+
+            // build your plaintext
             let mut plain_data = String::new();
             for (key, versioned_value) in table_data.iter() {
                 plain_data.push_str(&format!(
@@ -66,8 +132,13 @@ pub async fn save_to_cold(state: web::Data<AppState>) -> io::Result<()> {
                     serde_json::to_string(versioned_value)?
                 ));
             }
-            let encrypted_data = encrypt(&plain_data);
-            write!(file, "{}", encrypted_data)?;
+
+            // ✂️ unwrap the Result<String,_> here and map to io::Error
+            let encrypted_data = encrypt(&plain_data)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            // write the actual String, not a Result<_,_>
+            file.write_all(encrypted_data.as_bytes())?;
 
             // Clear the WAL
             let wal_path = folder_path.join("wal.log");
@@ -75,7 +146,9 @@ pub async fn save_to_cold(state: web::Data<AppState>) -> io::Result<()> {
         }
         Ok::<(), io::Error>(())
     })
-        .await?
+        .await??;
+
+    Ok(())
 }
 
 /// Loads all tables from disk by replaying the snapshot and WAL.
@@ -119,6 +192,7 @@ pub async fn load_all_tables(state: &web::Data<AppState>) -> io::Result<()> {
                                     "Decryption failed for table {}: {}",
                                     table_name, e
                                 );
+                                process::exit(1);
                             }
                         }
                     }

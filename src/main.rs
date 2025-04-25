@@ -163,7 +163,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // Spawn the periodic cold save task.
-    tokio::spawn(cold_save(state.clone(), 30));
+    tokio::spawn(cold_save(state.clone(), 5));
 
     // Initialize cluster data with dynamic membership.
     let mut initial_nodes = HashMap::new();

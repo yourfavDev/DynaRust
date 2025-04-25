@@ -20,3 +20,6 @@ openssl = { version = "0.10", features = ["vendored"] }
 chrono = "0.4.40"
 jsonwebtoken = "9.3.1"
 log = "0.4.27"
+rand_core = "0.9.3"
+aes-gcm   = "0.10"   # AES-GCM (AEAD) implementation
+aead      = "0.5"    # traits for Aead, KeyInit, etc.
