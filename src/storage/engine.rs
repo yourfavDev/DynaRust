@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use std::env;
+use std::{env, process};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use web::Json;
@@ -16,9 +16,6 @@ use crate::network::broadcaster::{gossip_membership};
 //
 // CONSTANTS & TYPES
 //
-
-// In production, do not hardcode your secret but load it from a secure source.
-const JWT_SECRET: &[u8] = b"kajdOsndmalskfi";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -99,6 +96,13 @@ pub struct JoinRequest {
 // UTILITY FUNCTIONS
 //
 
+pub fn get_jwt_secret() -> String {
+    env::var("JWT_SECRET").unwrap_or_else(|_| {
+        eprintln!("error: JWT_SECRET environment variable not set");
+        process::exit(1);
+    })
+}
+
 /// Get current timestamp in milliseconds.
 pub fn current_timestamp() -> u128 {
     SystemTime::now()
@@ -149,7 +153,7 @@ fn extract_user_from_token(req: &HttpRequest) -> Result<String, HttpResponse> {
                 let token = auth_str.trim_start_matches("Bearer ").trim();
                 match decode::<Claims>(
                     token,
-                    &DecodingKey::from_secret(JWT_SECRET),
+                    &DecodingKey::from_secret(get_jwt_secret().as_ref()),
                     &Validation::default(),
                 ) {
                     Ok(token_data) => Ok(token_data.claims.sub),

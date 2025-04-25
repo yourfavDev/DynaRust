@@ -8,7 +8,7 @@ use chrono::{Utc, Duration};
 use std::collections::HashMap;
 use jsonwebtoken::{encode, Header, EncodingKey};
 
-use crate::storage::engine::{get_active_nodes, get_replication_nodes, AppState, ClusterData, VersionedValue};
+use crate::storage::engine::{get_active_nodes, get_jwt_secret, get_replication_nodes, AppState, ClusterData, VersionedValue};
 use crate::storage::subscription::{KeyEvent, SubscriptionManager};
 
 /// Incoming JSON payload.
@@ -23,9 +23,6 @@ struct Claims {
     sub: String,
     exp: usize,
 }
-
-// Hard‐coded for demo; in prod load from ENV or config.
-const JWT_SECRET: &[u8] = b"kajdOsndmalskfi";
 
 pub async fn access(
     req: HttpRequest,
@@ -201,7 +198,7 @@ pub async fn access(
     let token = match encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(JWT_SECRET),
+        &EncodingKey::from_secret(get_jwt_secret().as_ref()),
     ) {
         Ok(t) => t,
         Err(e) => {

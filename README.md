@@ -47,7 +47,8 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
     - **Enforcement:** All `PUT` and `DELETE` operations require an `Authorization` header. The server verifies that the requester matches the record’s owner.
 
 - **Cluster Security:**
-    - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
+  - Each node should have a JWT_SECRET set, without this env var the node won't even start
+      - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
 
 - **Transport Security (HTTPS):**
     - **Easy Certificate Generation:**

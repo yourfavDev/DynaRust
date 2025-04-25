@@ -71,6 +71,13 @@ async fn main() -> std::io::Result<()> {
     let current_node = args[1].clone();
     // Use the current node address for binding.
     let bind_addr = current_node.clone();
+    match env::var("JWT_SECRET") {
+        Ok(secret) => secret,
+        Err(_) => {
+            eprintln!("JWT_SECRET environment variable not set");
+            std::process::exit(1);
+        }
+    };
 
     // Initialize the local in‑memory multi‑table key–value store.
     let state = web::Data::new(AppState {
