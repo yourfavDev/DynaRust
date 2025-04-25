@@ -1,3 +1,5 @@
+use tokio::sync::Semaphore;
+use crate::Arc;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -285,8 +287,8 @@ pub async fn get_value(
     HttpResponse::Ok().json(latest)
 }
 
-/// PUT handler: Inserts or updates a key–value pair with ownership verification.
-/// For external requests, a valid JWT token in the Authorization header is required.
+// external PUT handler
+#[allow(clippy::too_many_arguments)]
 pub async fn put_value(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -294,50 +296,26 @@ pub async fn put_value(
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     sub_manager: web::Data<SubscriptionManager>,
+    client: web::Data<reqwest::Client>,
+    sem: web::Data<Arc<Semaphore>>,
     body: web::Json<HashMap<String, Value>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
-    // Internal replication requests bypass authentication.
-    if req.headers().contains_key("X-Internal-Request") {
-        if env::var("CLUSTER_SECRET").unwrap_or_default().as_str() == req.headers().get("SECRET").unwrap().to_str().unwrap() {
-            let new_value = {
-                let mut store = state.store.write().await;
-                let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
-                if let Some(existing) = table.get_mut(&key_val) {
-                    existing.update(body.0.clone());
-                    existing.clone()
-                } else {
-                    let user_header = req.headers().get("User").unwrap().to_str().unwrap();
-
-                    // For internal requests, set owner as "internal"
-                    let v = VersionedValue::new(body.0.clone(), String::from(user_header));
-                    table.insert(key_val.clone(), v.clone());
-                    v
-                }
-            };
-            sub_manager
-                .notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone()))
-                .await;
-            return HttpResponse::Created().json(new_value);
-        } else {
-            return HttpResponse::Unauthorized().json(json!({}))
-        }
-    }
-
-    // External requests require a valid JWT token.
+    // 1️⃣ Authenticate external user via JWT
     let user = match extract_user_from_token(&req) {
         Ok(u) => u,
-        Err(err_resp) => return err_resp,
+        Err(resp) => return resp,
     };
 
+    // 2️⃣ Apply local update with ownership check
     let new_value = {
-        let mut store = state.store.write().await;
-        let table = store.entry(table_name.clone()).or_insert_with(HashMap::new);
+        let mut db = state.store.write().await;
+        let table = db.entry(table_name.clone()).or_default();
+
         if let Some(existing) = table.get_mut(&key_val) {
-            // Only allow the owner to update this record.
             if existing.owner != user {
-                return HttpResponse::Unauthorized().json(json!({
+                return HttpResponse::Unauthorized().json(serde_json::json!({
                     "error": "Not authorized to update this record"
                 }));
             }
@@ -350,50 +328,91 @@ pub async fn put_value(
         }
     };
 
+    // 3️⃣ Notify any SSE subscriptions
     sub_manager
         .notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone()))
         .await;
 
-    // Replicate to other nodes.
-    let cluster_guard = cluster_data.nodes.read().await;
-    let active_nodes = get_active_nodes(&*cluster_guard);
-    drop(cluster_guard);
+    // 4️⃣ Replicate *full* VersionedValue to other nodes, but cap concurrency
+    let cluster = cluster_data.nodes.read().await;
+    let active = get_active_nodes(&*cluster);
+    drop(cluster);
 
-    let replication_factor = active_nodes.len();
-    let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
-
-    let client = reqwest::Client::new();
-    let mut replication_futures = Vec::new();
+    let targets = get_replication_nodes(&key_val, &active, active.len());
+    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
 
     for target in targets {
-        if target != *current_addr.get_ref() {
-            let user2 = user.clone();
-            let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
-            let client_clone = client.clone();
-            let value_clone = new_value.clone();
-            let fut = async move {
-                let result = client_clone
-                    .put(&url)
-                    .header("X-Internal-Request", "true")
-                    .header("User", user2.clone())
-                    .header("SECRET", env::var("CLUSTER_SECRET").unwrap_or_default())
-                    .json(&value_clone.value)  // HERE'S THE FIX: Send only the inner value data
-                    .timeout(std::time::Duration::from_secs(3))
-                    .send()
-                    .await;
-                if let Err(e) = result {
-                    println!("Replication error to {}: {}", target, e);
-                }
-            };
-            replication_futures.push(fut);
+        if target == *current_addr.get_ref() {
+            continue;
         }
+        // acquire a permit (will await if > 20 in flight)
+        let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+        let cli = client.clone();
+        let payload = new_value.clone();
+        let url = format!(
+            "http://{}/internal/{}/key/{}",
+            target, table_name, key_val
+        );
+
+        let secret_clone = secret.clone();
+
+        tokio::spawn(async move {
+            let _permit = permit; // held until this future ends
+            if let Err(e) = cli
+                .put(&url)
+                .header("X-Internal-Request", "true")
+                .header("SECRET", &secret_clone)
+                .json(&payload)
+                .send()
+                .await
+            {
+                eprintln!("replication to {} failed: {}", target, e);
+            }
+        });
     }
-    tokio::spawn(async move {
-        futures_util::future::join_all(replication_futures).await;
-    });
+
     HttpResponse::Created().json(new_value)
 }
 
+// internal PUT handler (must be mounted at: /internal/{table}/key/{key})
+pub async fn put_value_internal(
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+    state: web::Data<AppState>,
+    sub_manager: web::Data<SubscriptionManager>,
+    body: web::Json<VersionedValue>,
+) -> impl Responder {
+    let (table_name, key_val) = path.into_inner();
+
+    // 1️⃣ Cluster‐secret check
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_default();
+    match req.headers().get("SECRET") {
+        Some(h) if h.to_str().unwrap_or("") == cluster_secret => {}
+        _ => return HttpResponse::Unauthorized().finish(),
+    }
+
+    // 2️⃣ Merge the incoming VersionedValue by version number
+    let incoming = body.into_inner();
+    let mut db = state.store.write().await;
+    let table = db.entry(table_name.clone()).or_default();
+
+    let cached = table
+        .entry(key_val.clone())
+        .and_modify(|existing| {
+            if incoming.version > existing.version {
+                *existing = incoming.clone();
+            }
+        })
+        .or_insert_with(|| incoming.clone())
+        .clone();
+
+    // 3️⃣ Notify subscribers
+    sub_manager
+        .notify(&table_name, &key_val, KeyEvent::Updated(cached.clone()))
+        .await;
+
+    HttpResponse::Created().json(cached)
+}
 
 /// DELETE handler: Removes a key with an ownership check.
 pub async fn delete_value(

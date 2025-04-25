@@ -20,6 +20,7 @@ use storage::engine::{
 };
 use storage::persistance::{cold_save, load_all_tables};
 use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
+use crate::storage::engine::put_value_internal;
 use crate::storage::snapshoting::start_snapshot_task;
 use crate::storage::statistics::{get_stats, MetricsCollector, MetricsMiddleware};
 use crate::storage::subscription::SubscriptionManager;
@@ -222,6 +223,10 @@ async fn main() -> std::io::Result<()> {
                     .route("/membership", web::get().to(get_membership))
                     .route("/update_membership", web::post().to(update_membership))
                     .route("/heartbeat", web::get().to(heartbeat))
+                    .route(
+                        "/internal/{table}/key/{key}",
+                        web::put().to(put_value_internal),
+                    )
                     // Key–value endpoints with multi‑table support.
                     .route("/{table}/key/{key}", web::get().to(get_value))
                     .route("/{table}/key/{key}", web::put().to(put_value))
@@ -260,6 +265,10 @@ async fn main() -> std::io::Result<()> {
                     .route("/membership", web::get().to(get_membership))
                     .route("/update_membership", web::post().to(update_membership))
                     .route("/heartbeat", web::get().to(heartbeat))
+                    .route(
+                        "/internal/{table}/key/{key}",
+                        web::put().to(put_value_internal),
+                    )
                     // Key–value endpoints with multi‑table support.
                     .route("/{table}/key/{key}", web::get().to(get_value))
                     .route("/{table}/key/{key}", web::put().to(put_value))

@@ -6,25 +6,28 @@
 FROM rust:1.86.0 AS builder
 WORKDIR /app
 
-# Install build dependencies, including OpenSSL development package.
+# Install build deps: pkg-config + OpenSSL headers + a linker
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     clang \
     lld \
-    && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/*
 
-# Copy Cargo manifest and lockfile for dependency caching.
+# Copy only manifests to leverage Docker cache
 COPY Cargo.toml Cargo.lock ./
 
-# Copy the source files.
+# Copy source + any keys
 COPY src ./src
+COPY encryption.key .
 
-# Build the project in release mode.
+# Tell openssl-sys to stop vendoring OpenSSL and to use pkg-config instead
+ENV OPENSSL_NO_VENDOR=1
+
+# Build
 RUN cargo build --release --locked
 
-# Rename the produced binary.
-# (Assuming your Cargo project name is "DynaRust" so that the binary is named "DynaRust" by default)
+# Copy binary for next stage
 RUN cp target/release/DynaRust /server
 
 ###############################
@@ -33,19 +36,13 @@ RUN cp target/release/DynaRust /server
 FROM debian:bookworm-slim
 WORKDIR /app
 
-# Install the OpenSSL runtime library (which provides libssl.so.3).
+# Install just the runtime libssl
 RUN apt-get update && apt-get install -y \
     libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/*
 
-# Copy the built server binary from the builder stage.
+# Pull in the server
 COPY --from=builder /server /usr/local/bin/server
 
-# Expose port 6660.
 EXPOSE 6660
-
-# Set the entrypoint.
-# By default, the container will run:
-#   /usr/local/bin/server 0.0.0.0:6660
-# Any extra arguments passed to 'docker run' will be appended to the command.
 ENTRYPOINT ["/usr/local/bin/server", "0.0.0.0:6660"]
