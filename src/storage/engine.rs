@@ -440,6 +440,9 @@ pub async fn delete_value(
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     sub_manager: web::Data<SubscriptionManager>,
+    // ADDED: Shared client and semaphore
+    client: web::Data<reqwest::Client>,
+    sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
@@ -492,7 +495,7 @@ pub async fn delete_value(
         } else {
             "Table not found locally"
         }
-            .to_string()
+        .to_string()
     };
 
     sub_manager
@@ -506,13 +509,16 @@ pub async fn delete_value(
     let replication_factor = active_nodes.len();
     let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
 
-    let client = reqwest::Client::new();
-    let mut replication_futures = Vec::new();
     for target in targets {
         if target != *current_addr.get_ref() {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
-            let fut = async move {
+            
+            // Acquire permit to cap concurrent outgoing replication tasks
+            let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+
+            tokio::spawn(async move {
+                let _permit = permit; // Permit is held until the deletion request completes
                 let result = client_clone
                     .delete(&url)
                     .header("X-Internal-Request", "true")
@@ -522,16 +528,12 @@ pub async fn delete_value(
                 if let Err(e) = result {
                     println!("Deletion replication error to {}: {}", target, e);
                 }
-            };
-            replication_futures.push(fut);
+            });
         }
     }
-    tokio::spawn(async move {
-        futures_util::future::join_all(replication_futures).await;
-    });
+    
     HttpResponse::Ok().json(json!({"message": local_status}))
 }
-
 //
 // TABLE MANAGEMENT HANDLERS
 //
@@ -592,6 +594,9 @@ pub async fn get_multiple_keys(
 pub async fn join_cluster(
     cluster: web::Data<ClusterData>,
     request: Json<JoinRequest>,
+    // ADDED: Shared client and semaphore
+    client: web::Data<reqwest::Client>,
+    sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let cluster_secret = env::var("CLUSTER_SECRET")
         .unwrap_or_else(|_| "default_secret".to_string());
@@ -603,6 +608,7 @@ pub async fn join_cluster(
     let new_node = request.node.clone();
     let cluster2 = cluster.clone();
     let mut nodes_guard = cluster.nodes.write().await;
+    
     if !nodes_guard.contains_key(&new_node) {
         nodes_guard.insert(
             new_node.clone(),
@@ -612,17 +618,26 @@ pub async fn join_cluster(
             },
         );
 
-        tokio::spawn(async move {
+        // Safely bound the background sleep/gossip task. 
+        // If the system is maxed out, we skip the background gossip rather than queuing unbound tasks.
+        if let Ok(permit) = <Arc<Semaphore> as Clone>::clone(&sem).try_acquire_owned() {
+            tokio::spawn(async move {
+                let _permit = permit; // Permit held during the sleep and gossip phase
                 time::sleep(std::time::Duration::from_secs(5)).await;
+                
                 let args: Vec<String> = env::args().collect();
-                let current_node = args[1].clone();
-                let client = reqwest::Client::new();
-                gossip_membership(&cluster2, &client, &*current_node).await;
-        });
+                if args.len() > 1 {
+                    let current_node = args[1].clone();
+                    gossip_membership(&cluster2, &client, &current_node).await;
+                }
+            });
+        } else {
+            eprintln!("Warning: Dropping gossip broadcast for new node {} due to high load", new_node);
+        }
     }
+    
     HttpResponse::Ok().json(nodes_guard.clone())
 }
-
 pub async fn get_global_store(
     req: HttpRequest,
     state: web::Data<AppState>,

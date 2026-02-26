@@ -192,7 +192,7 @@ pub async fn access(
     }
 
     // Generate JWT token for the authenticated user
-    let exp = (Utc::now() + Duration::hours(1)).timestamp() as usize;
+    let exp = (Utc::now() + Duration::hours(24)).timestamp() as usize;
     let claims = Claims { sub: username.clone(), exp };
 
     let token = match encode(
