@@ -63,6 +63,7 @@ fn merge_global_store(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    dotenvy::dotenv().unwrap();
     // Usage: <program> <current_node_address> [join_node_address]
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {

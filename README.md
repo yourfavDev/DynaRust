@@ -42,7 +42,7 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 ### 🔒 **Security**
 
 - **Access Control:**
-    - **Read:** Anyone can read records.
+    - **Read:** Only the owner can read the record (passed via bearer header token)
     - **Write/Delete:** Only the record’s owner (as specified in the `owner` field) can modify or delete it.
     - **Enforcement:** All `PUT` and `DELETE` operations require an `Authorization` header. The server verifies that the requester matches the record’s owner.
 

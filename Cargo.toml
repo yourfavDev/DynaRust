@@ -23,3 +23,4 @@ log = "0.4.27"
 rand_core = "0.9.3"
 aes-gcm   = "0.10"   # AES-GCM (AEAD) implementation
 aead      = "0.5"    # traits for Aead, KeyInit, etc.
+dotenvy = "0.15.7"

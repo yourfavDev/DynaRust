@@ -192,9 +192,11 @@ pub async fn get_value(
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
 ) -> impl Responder {
-    // For internal replication requests, do local lookup.
+    let (table_name, key_val) = path.into_inner();
+
+    // 1️⃣ Internal Replication Request - Bypass Auth
+    // Internal nodes need to read raw data for syncing.
     if req.headers().contains_key("X-Internal-Request") {
-        let (table_name, key_val) = path.into_inner();
         let store = state.store.read().await;
         let result = store
             .get(&table_name)
@@ -203,9 +205,13 @@ pub async fn get_value(
         return HttpResponse::Ok().json(result);
     }
 
-    let (table_name, key_val) = path.into_inner();
+    // 2️⃣ Authenticate external user via JWT
+    let user = match extract_user_from_token(&req) {
+        Ok(u) => u,
+        Err(resp) => return HttpResponse::Unauthorized().body("You are not owning this record"),
+    };
 
-    // For external requests, request replicas.
+    // 3️⃣ Request replicas (including local node) to find the latest version
     let cluster_guard = cluster_data.nodes.read().await;
     let active_nodes = get_active_nodes(&*cluster_guard);
     drop(cluster_guard);
@@ -214,14 +220,15 @@ pub async fn get_value(
     let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
 
     let client = reqwest::Client::new();
-    let mut futures_vec: Vec<BoxFuture<'static, Result<Option<VersionedValue>, String>>> =
-        Vec::new();
+    let mut futures_vec: Vec<BoxFuture<'static, Result<Option<VersionedValue>, String>>> = Vec::new();
 
     for target in targets.into_iter() {
         if target == *current_addr.get_ref() {
             let state_clone = state.clone();
             let table_name_clone = table_name.clone();
             let key_clone = key_val.clone();
+            
+            // Use a READ lock here, not a WRITE lock
             let fut: BoxFuture<'static, Result<Option<VersionedValue>, String>> =
                 Box::pin(async move {
                     let store = state_clone.store.read().await;
@@ -264,6 +271,7 @@ pub async fn get_value(
         }
     }
 
+    // Wait for all cluster responses
     let results = futures_util::future::join_all(futures_vec).await;
     let mut valid_results = Vec::new();
     for res in results {
@@ -274,8 +282,9 @@ pub async fn get_value(
         }
     }
 
+    // 4️⃣ Resolve the latest version
     if valid_results.is_empty() {
-        return HttpResponse::NotFound().json(json!({
+        return HttpResponse::NotFound().json(serde_json::json!({
             "error": "Key not found on any replica"
         }));
     }
@@ -284,9 +293,18 @@ pub async fn get_value(
         .into_iter()
         .max_by(|a, b| a.version.cmp(&b.version))
         .unwrap();
+
+    // 5️⃣ Enforce Ownership!
+    // We check ownership against the definitive 'latest' record, 
+    // guaranteeing no unauthorized access regardless of which node held the data.
+    if latest.owner != user {
+        return HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "Not authorized to view record"
+        }));
+    }
+
     HttpResponse::Ok().json(latest)
 }
-
 // external PUT handler
 #[allow(clippy::too_many_arguments)]
 pub async fn put_value(
