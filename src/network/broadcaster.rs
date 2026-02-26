@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 use reqwest;
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use serde_json::json;
 use crate::storage::engine::{
     current_timestamp, ClusterData, NodeInfo, NodeStatus,
@@ -181,18 +181,50 @@ pub async fn heartbeat() -> impl Responder {
     }))
 }
 
+// Define a safe upper bound for your cluster size
+const MAX_CLUSTER_SIZE: usize = 100; 
+
 /// Process membership updates received from other nodes
 pub async fn update_membership(
+    req: HttpRequest, // Added to inspect headers
     cluster_data: web::Data<ClusterData>,
     payload: web::Json<HashMap<String, NodeInfo>>,
 ) -> impl Responder {
+    // 1. Authentication Check
+    // In production, load this once at startup rather than on every request
+    let expected_token = env::var("CLUSTER_SECRET")
+        .unwrap_or_else(|_| "default_insecure_secret".to_string());
+    
+    let is_authenticated = req.headers()
+        .get("X-Cluster-Token")
+        .and_then(|h| h.to_str().ok())
+        .map_or(false, |token| token == expected_token);
+
+    if !is_authenticated {
+        return HttpResponse::Unauthorized().json(json!({
+            "error": "Unauthorized: Invalid or missing cluster token"
+        }));
+    }
+
     let mut local_guard = cluster_data.nodes.write().await;
     let incoming = payload.into_inner();
     let mut updated = false;
 
     for (node, info) in incoming.into_iter() {
-        // For nodes not in our membership, add them
+        // 2. Input Validation (Basic check to ensure it looks like a URL)
+        if !node.starts_with("http://") && !node.starts_with("https://") {
+            continue; // Ignore malformed node addresses
+        }
+
+        // For nodes not in our membership, add them safely
         if !local_guard.contains_key(&node) {
+            // 3. Hard Limit Check
+            if local_guard.len() >= MAX_CLUSTER_SIZE {
+                // Silently ignore or log a warning. Avoid heavy logging to prevent log-flooding DoS.
+                eprintln!("Warning: Cluster at max capacity ({}). Ignoring new node: {}", MAX_CLUSTER_SIZE, node);
+                continue; 
+            }
+
             local_guard.insert(node, info);
             updated = true;
             continue;
@@ -212,7 +244,6 @@ pub async fn update_membership(
 
     HttpResponse::Ok().finish()
 }
-
 /// Get the current cluster membership state
 pub async fn get_membership(
     cluster_data: web::Data<ClusterData>,

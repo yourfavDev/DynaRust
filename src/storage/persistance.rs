@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File, read_dir};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader,  Write};
 use std::path::Path;
 use std::process;
 use std::time::Duration;
@@ -108,59 +108,85 @@ pub struct WalEntry {
 // }
 
 /// Saves the current in‑memory state (snapshot) for each table to disk.
-/// Also clears the WAL after snapshot.
+/// Processes one table at a time, and encrypts data in 1MB chunks to prevent OOM.
 pub async fn save_to_cold(state: web::Data<AppState>) -> io::Result<()> {
-    // Clone the store so that we can release the lock.
-    let store_snapshot = {
+    let table_names: Vec<String> = {
         let store = state.store.read().await;
-        store.clone()
+        store.keys().cloned().collect()
     };
-    let state_clone = state.clone();
-    task::spawn_blocking(move || {
-        for (table_name, table_data) in store_snapshot.into_iter() {
-            let folder_path = Path::new(state_clone.base_dir).join(&table_name);
+
+    for table_name in table_names {
+        // Grab the read lock just long enough to clone this specific table
+        let table_data = {
+            let store = state.store.read().await;
+            match store.get(&table_name) {
+                Some(data) => data.clone(),
+                None => continue,
+            }
+        };
+
+        let state_clone = state.clone();
+        let t_name = table_name.clone();
+
+        task::spawn_blocking(move || -> io::Result<()> {
+            let folder_path = Path::new(state_clone.base_dir).join(&t_name);
             create_dir_all(&folder_path)?;
             let file_path = folder_path.join("storage.db");
             let mut file = File::create(&file_path)?;
 
-            // build your plaintext
-            let mut plain_data = String::new();
-            for (key, versioned_value) in table_data.iter() {
-                plain_data.push_str(&format!(
-                    "{} = {}\n",
-                    key,
-                    serde_json::to_string(versioned_value)?
-                ));
+            let mut plain_buffer = String::new();
+            // Define a chunk size limit (e.g., 1 MB)
+            let chunk_size_limit = 1024 * 1024; 
+
+            // Use into_iter() to consume the cloned table and free memory as we go
+            for (key, versioned_value) in table_data.into_iter() {
+                let json_str = serde_json::to_string(&versioned_value)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                
+                plain_buffer.push_str(&format!("{} = {}\n", key, json_str));
+
+                // If our buffer hits the limit, encrypt, write, and clear
+                if plain_buffer.len() >= chunk_size_limit {
+                    let encrypted_chunk = encrypt(&plain_buffer)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    
+                    // Write the base64 string followed by a newline
+                    writeln!(file, "{}", encrypted_chunk)?;
+                    plain_buffer.clear();
+                }
             }
 
-            // ✂️ unwrap the Result<String,_> here and map to io::Error
-            let encrypted_data = encrypt(&plain_data)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            // Flush any remaining records in the buffer
+            if !plain_buffer.is_empty() {
+                let encrypted_chunk = encrypt(&plain_buffer)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                writeln!(file, "{}", encrypted_chunk)?;
+            }
 
-            // write the actual String, not a Result<_,_>
-            file.write_all(encrypted_data.as_bytes())?;
-
-            // Clear the WAL
+            // Clear the WAL for this table
             let wal_path = folder_path.join("wal.log");
             File::create(&wal_path)?;
-        }
-        Ok::<(), io::Error>(())
-    })
+
+            Ok(())
+        })
         .await??;
+    }
 
     Ok(())
 }
-
 /// Loads all tables from disk by replaying the snapshot and WAL.
 pub async fn load_all_tables(state: &web::Data<AppState>) -> io::Result<()> {
     let state_cloned = state.clone(); // clone to ensure 'static lifetime in blocking task
+    
     let new_store = task::spawn_blocking(move || {
-        let base_path = Path::new(state_cloned.base_dir);
+        let base_path = Path::new(&state_cloned.base_dir);
         let mut store: HashMap<String, HashMap<String, VersionedValue>> = HashMap::new();
+        
         if base_path.exists() && base_path.is_dir() {
             for entry in read_dir(base_path)? {
                 let entry = entry?;
                 let table_folder = entry.path();
+                
                 if table_folder.is_dir() {
                     let table_name = match table_folder.file_name() {
                         Some(name) => name.to_string_lossy().to_string(),
@@ -169,44 +195,56 @@ pub async fn load_all_tables(state: &web::Data<AppState>) -> io::Result<()> {
 
                     let mut table_data: HashMap<String, VersionedValue> = HashMap::new();
                     let snapshot_path = table_folder.join("storage.db");
+                    
+                    // --- 1. Load Snapshot via Chunked Decryption ---
                     if snapshot_path.exists() {
-                        let mut file = File::open(&snapshot_path)?;
-                        let mut encrypted_content = String::new();
-                        file.read_to_string(&mut encrypted_content)?;
-                        match decrypt(&encrypted_content) {
-                            Ok(decrypted_content) => {
-                                for line in decrypted_content.lines() {
-                                    if let Some((key, json_str)) = line.split_once('=') {
-                                        let key = key.trim().to_string();
-                                        let json_str = json_str.trim();
-                                        if let Ok(value) =
-                                            serde_json::from_str::<VersionedValue>(json_str)
-                                        {
-                                            table_data.insert(key, value);
+                        let file = File::open(&snapshot_path)?;
+                        let reader = BufReader::new(file);
+                        
+                        // Read line by line (each line is a Base64 encrypted chunk)
+                        for encrypted_line in reader.lines() {
+                            let encrypted_line = encrypted_line?;
+                            let trimmed_line = encrypted_line.trim();
+                            
+                            if trimmed_line.is_empty() {
+                                continue;
+                            }
+
+                            match decrypt(trimmed_line) {
+                                Ok(decrypted_content) => {
+                                    // Process the decrypted block of plaintext
+                                    for line in decrypted_content.lines() {
+                                        if let Some((key, json_str)) = line.split_once('=') {
+                                            let key = key.trim().to_string();
+                                            let json_str = json_str.trim();
+                                            if let Ok(value) =
+                                                serde_json::from_str::<VersionedValue>(json_str)
+                                            {
+                                                table_data.insert(key, value);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Decryption failed for table {}: {}",
-                                    table_name, e
-                                );
-                                process::exit(1);
+                                Err(e) => {
+                                    eprintln!(
+                                        "Decryption failed for table {} chunk: {}",
+                                        table_name, e
+                                    );
+                                    process::exit(1);
+                                }
                             }
                         }
                     }
 
-                    // Replay WAL entries.
+                    // --- 2. Replay WAL entries ---
                     let wal_path = table_folder.join("wal.log");
                     if wal_path.exists() {
                         let file = File::open(&wal_path)?;
                         let reader = BufReader::new(file);
+                        
                         for line in reader.lines() {
                             let line = line?;
-                            if let Ok(entry) =
-                                serde_json::from_str::<WalEntry>(&line)
-                            {
+                            if let Ok(entry) = serde_json::from_str::<WalEntry>(&line) {
                                 match entry.op.as_str() {
                                     "put" => {
                                         if let Some(val) = entry.value {
@@ -237,12 +275,13 @@ pub async fn load_all_tables(state: &web::Data<AppState>) -> io::Result<()> {
         }
         Ok::<HashMap<String, HashMap<String, VersionedValue>>, io::Error>(store)
     })
-        .await??;
+    .await??;
+    
+    // Apply the newly built store to the live application state
     let mut store_write = state.store.write().await;
     *store_write = new_store;
     Ok(())
 }
-
 /// Spawns a background Tokio task that periodically saves the current state to disk.
 pub async fn cold_save(state: web::Data<AppState>, interval: usize) {
     tokio::spawn(async move {

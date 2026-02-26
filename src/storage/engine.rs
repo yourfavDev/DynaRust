@@ -208,7 +208,7 @@ pub async fn get_value(
     // 2️⃣ Authenticate external user via JWT
     let user = match extract_user_from_token(&req) {
         Ok(u) => u,
-        Err(resp) => return HttpResponse::Unauthorized().body("You are not owning this record"),
+        Err(_) => return HttpResponse::Unauthorized().body("You are not owning this record"),
     };
 
     // 3️⃣ Request replicas (including local node) to find the latest version
