@@ -40,13 +40,30 @@ impl SubscriptionManager {
         }
     }
 
-    /// Send a notification for the given table/key.
-    pub async fn notify(&self, table: &str, key: &str, event: KeyEvent) {
+   pub async fn notify(&self, table: &str, key: &str, event: KeyEvent) {
         let identifier = format!("{}/{}", table, key);
-        let channels = self.channels.read().await;
-        if let Some(sender) = channels.get(&identifier) {
-            // Ignore send error if there are no subscribers
-            let _ = sender.send(event);
+        
+        // Scope the read lock
+        let should_cleanup = {
+            let channels = self.channels.read().await;
+            if let Some(sender) = channels.get(&identifier) {
+                // send() returns an Err if there are no active receivers.
+                sender.send(event).is_err() 
+            } else {
+                false // Channel doesn't exist, nothing to do
+            }
+        };
+
+        // If there were no receivers, acquire a write lock to clean up
+        if should_cleanup {
+            let mut channels = self.channels.write().await;
+            // Double-check: a new subscriber might have joined between dropping 
+            // the read lock and acquiring the write lock!
+            if let Some(sender) = channels.get(&identifier) {
+                if sender.receiver_count() == 0 {
+                    channels.remove(&identifier);
+                }
+            }
         }
     }
 }
