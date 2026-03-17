@@ -53,6 +53,14 @@ impl VersionedValue {
         self.version += 1;
         self.timestamp = current_timestamp();
     }
+
+    pub fn patch(&mut self, updates: HashMap<String, Value>) {
+        for (k, v) in updates {
+            self.value.insert(k, v);
+        }
+        self.version += 1;
+        self.timestamp = current_timestamp();
+    }
 }
 
 /// The local in-memory database state.
@@ -305,6 +313,93 @@ pub async fn get_value(
 
     HttpResponse::Ok().json(latest)
 }
+// external PATCH handler
+#[allow(clippy::too_many_arguments)]
+pub async fn patch_value(
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+    state: web::Data<AppState>,
+    cluster_data: web::Data<ClusterData>,
+    current_addr: web::Data<String>,
+    sub_manager: web::Data<SubscriptionManager>,
+    client: web::Data<reqwest::Client>,
+    sem: web::Data<Arc<Semaphore>>,
+    body: web::Json<HashMap<String, Value>>,
+) -> impl Responder {
+    let (table_name, key_val) = path.into_inner();
+
+    // 1️⃣ Authenticate external user via JWT
+    let user = match extract_user_from_token(&req) {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    // 2️⃣ Apply local update with ownership check
+    let new_value = {
+        let mut db = state.store.write().await;
+        let table = db.entry(table_name.clone()).or_default();
+
+        if let Some(existing) = table.get_mut(&key_val) {
+            if existing.owner != user {
+                return HttpResponse::Unauthorized().json(serde_json::json!({
+                    "error": "Not authorized to update this record"
+                }));
+            }
+            existing.patch(body.0.clone());
+            existing.clone()
+        } else {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Record not found"
+            }));
+        }
+    };
+
+    // 3️⃣ Notify any SSE subscriptions
+    sub_manager
+        .notify(&table_name, &key_val, KeyEvent::Updated(new_value.clone()))
+        .await;
+
+    // 4️⃣ Replicate *full* VersionedValue to other nodes, but cap concurrency
+    let cluster = cluster_data.nodes.read().await;
+    let active = get_active_nodes(&*cluster);
+    drop(cluster);
+
+    let targets = get_replication_nodes(&key_val, &active, active.len());
+    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
+
+    for target in targets {
+        if target == *current_addr.get_ref() {
+            continue;
+        }
+        // acquire a permit (will await if > 20 in flight)
+        let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+        let cli = client.clone();
+        let payload = new_value.clone();
+        let url = format!(
+            "http://{}/internal/{}/key/{}",
+            target, table_name, key_val
+        );
+
+        let secret_clone = secret.clone();
+
+        tokio::spawn(async move {
+            let _permit = permit; // held until this future ends
+            if let Err(e) = cli
+                .put(&url)
+                .header("X-Internal-Request", "true")
+                .header("SECRET", &secret_clone)
+                .json(&payload)
+                .send()
+                .await
+            {
+                eprintln!("replication to {} failed: {}", target, e);
+            }
+        });
+    }
+
+    HttpResponse::Ok().json(new_value)
+}
+
 // external PUT handler
 #[allow(clippy::too_many_arguments)]
 pub async fn put_value(

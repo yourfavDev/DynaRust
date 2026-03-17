@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 use storage::engine::{
     AppState, ClusterData, delete_value, get_value, get_table_store, join_cluster, put_value,
-    get_all_keys, get_multiple_keys, NodeInfo, NodeStatus, current_timestamp,
+    patch_value, get_all_keys, get_multiple_keys, NodeInfo, NodeStatus, current_timestamp,
     VersionedValue, get_global_store
 };
 use storage::persistance::{cold_save, load_all_tables};
@@ -239,6 +239,7 @@ async fn main() -> std::io::Result<()> {
                     // Key–value endpoints with multi‑table support.
                     .route("/{table}/key/{key}", web::get().to(get_value))
                     .route("/{table}/key/{key}", web::put().to(put_value))
+                    .route("/{table}/key/{key}", web::patch().to(patch_value))
                     .route("/{table}/key/{key}", web::delete().to(delete_value))
                     // Endpoint to fetch a table’s entire in‑memory store.
                     .route("/{table}/store", web::get().to(get_table_store))
@@ -283,6 +284,7 @@ async fn main() -> std::io::Result<()> {
                     // Key–value endpoints with multi‑table support.
                     .route("/{table}/key/{key}", web::get().to(get_value))
                     .route("/{table}/key/{key}", web::put().to(put_value))
+                    .route("/{table}/key/{key}", web::patch().to(patch_value))
                     .route("/{table}/key/{key}", web::delete().to(delete_value))
                     // Endpoint to fetch a table’s entire in‑memory store.
                     .route("/{table}/store", web::get().to(get_table_store))

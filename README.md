@@ -110,7 +110,7 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
 
 2. **✍️ Store or Update a Value (HTTP PUT)**  
    Create or update a value under `{table}/{key}`.  
-   - URL: `/default/key/mykey`  
+   - URL: `/{table}/key/{key}`  
    - Headers:  
      ```
      Content-Type: application/json  
@@ -118,14 +118,14 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
      ```  
    - Body:  
      ```json
-     { "value": "mydata" }
+     { "value": { ... } }
      ```  
    - Success:  
      • `201 Created`  
      • Body (VersionedValue):  
        ```json
        {
-         "value": "mydata",
+         "value": { ... },
          "version": 1,
          "timestamp": 1618880821123,
          "owner": "alice"
@@ -134,15 +134,42 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
    - Errors:  
      • `401 Unauthorized` if missing/invalid JWT or not owner on update  
 
-3. **🔍 Retrieve a Value (HTTP GET)**  
+3. **🛠️ Partially Update a Value (HTTP PATCH)**  
+   Merge updates into an existing value under `{table}/{key}`. Only the owner can patch.
+   - URL: `/{table}/key/{key}`  
+   - Headers:  
+     ```
+     Content-Type: application/json  
+     Authorization: Bearer <JWT‑TOKEN>
+     ```  
+   - Body:  
+     ```json
+     { "new_field": "updated_data" }
+     ```  
+   - Success:  
+     • `200 OK`  
+     • Body (Updated VersionedValue):  
+       ```json
+       {
+         "value": { "original_field": "...", "new_field": "updated_data" },
+         "version": 2,
+         "timestamp": 1618880825000,
+         "owner": "alice"
+       }
+       ```  
+   - Errors:  
+     • `401 Unauthorized` if missing/invalid JWT or not owner  
+     • `404 Not Found` if key/table missing  
+
+4. **🔍 Retrieve a Value (HTTP GET)**  
    Anyone can fetch a key’s latest value.  
-   - URL: `/default/key/mykey`  
+   - URL: `/{table}/key/{key}`  
    - Success:  
      • `200 OK`  
      • Body:  
        ```json
        {
-         "value": "mydata",
+         "value": { ... },
          "version": 1,
          "timestamp": 1618880821123,
          "owner": "alice"
@@ -150,9 +177,9 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
        ```  
      • `404 Not Found` if key/table missing  
 
-4. **🗑️ Delete a Value (HTTP DELETE)**  
+5. **🗑️ Delete a Value (HTTP DELETE)**  
    Only the owner may delete.  
-   - URL: `/default/key/mykey`  
+   - URL: `/{table}/key/{key}`  
    - Header:  
      ```
      Authorization: Bearer <JWT‑TOKEN>
@@ -167,27 +194,27 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
      • `401 Unauthorized` if no JWT or not owner  
      • `404 Not Found` if key/table missing  
 
-5. **📚 Fetch Entire Table Store (HTTP GET)**  
+6. **📚 Fetch Entire Table Store (HTTP GET)**  
    List all key→VersionedValue pairs in a table.  
-   - URL: `/default/store`  
+   - URL: `/{table}/store`  
    - Success:  
      • `200 OK`  
      • Body:  
        ```json
        {
-         "key1": { "value":"v1","version":2,…,"owner":"bob" },
+         "key1": { "value":{...},"version":2,…,"owner":"bob" },
          "key2": { … }
        }
        ```  
    - `404 Not Found` if table missing  
 
-6. **🔑 List or Batch‑Fetch Keys**  
-   6.1 **GET** `/default/keys`  
+7. **🔑 List or Batch‑Fetch Keys**  
+   7.1 **GET** `/{table}/keys`  
        • `200 OK` →  
          ```json
          ["key1","key2",…]
          ```  
-   6.2 **POST** `/default/keys`  
+   7.2 **POST** `/{table}/keys`  
        - Body:  
          ```json
          ["key1","key2","key3"]
@@ -195,18 +222,18 @@ All operations except **GET** require a valid JWT in the `Authorization: Bearer 
        - `200 OK` →  
          ```json
          {
-           "key1": { "value":"v1","version":… },
+           "key1": { "value":{...},"version":… },
            "key3": { … }
          }
          ```  
        (non‑existent keys are omitted)
 
-7. **🔔 Subscribe to Real‑Time Updates (SSE)**  
+8. **🔔 Subscribe to Real‑Time Updates (SSE)**  
    Instant updates on a single key.  
-   - URL: `/default/subscribe/mykey`  
+   - URL: `/{table}/subscribe/{key}`  
    - Usage:  
      ```bash
-     curl -N http://localhost:6660/default/subscribe/mykey
+     curl -N http://localhost:6660/{table}/subscribe/{key}
      ```  
    - Each update is a JSON event:  
      ```json
@@ -232,22 +259,26 @@ TOKEN=$(curl -s -X POST http://localhost:6660/auth/alice \
 curl -i -X PUT http://localhost:6660/default/key/foo \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"value":"hello"}'
+  -d '{"value": {"name": "bar"}}'
 
-# 4) GET
+# 4) PATCH (partially update)
+curl -i -X PATCH http://localhost:6660/default/key/foo \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"age": 30}'
+
+# 5) GET
 curl -i http://localhost:6660/default/key/foo
 
-# 5) DELETE (owner only)
+# 6) DELETE (owner only)
 curl -i -X DELETE http://localhost:6660/default/key/foo \
   -H "Authorization: Bearer $TOKEN"
 
-# 6) Node stats
+# 7) Node stats
 curl http://localhost:6660/stats
-Response:
-{"tables":{"auth":2,"test":20088,"default":1},"total_keys":20091,"total_requests":5,"average_latency_ms":0.4171416,"active_sse_connections":0}
 ```
 
-> ⚠️ PUT/DELETE without a valid JWT → **401 Unauthorized**  
+> ⚠️ PUT/PATCH/DELETE without a valid JWT → **401 Unauthorized**  
 > 🔍 GET is always open (no auth needed).
 ---
 

@@ -2,8 +2,8 @@
 
 # Configuration
 PORT=6660
-BASE_URL="http://localhost:$PORT"
-TOTAL_RECORDS=10000  # Change to 100000 for the full test
+BASE_URL="http://linking.studio:$PORT"
+TOTAL_RECORDS=1000  # Change to 100000 for the full test
 CONCURRENCY=50       # Number of parallel requests
 TABLE="test_perf"
 
