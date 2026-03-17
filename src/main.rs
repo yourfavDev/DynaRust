@@ -252,6 +252,14 @@ async fn main() -> std::io::Result<()> {
                         storage::subscription::subscribe_to_key
                     ))
                     .route("/auth/{user}", web::post().to(security::authentication::access))
+                    // Admin Dashboard Routes
+                    .route("/admin", web::get().to(storage::admin::admin_dashboard))
+                    .route("/admin/login", web::post().to(storage::admin::admin_login))
+                    .route("/admin/tables", web::get().to(storage::admin::admin_get_tables))
+                    .route("/admin/table/{table}/keys", web::get().to(storage::admin::admin_get_keys))
+                    .route("/admin/table/{table}/key/{key}", web::get().to(storage::admin::admin_get_record))
+                    .route("/admin/table/{table}/key/{key}", web::put().to(storage::admin::admin_put_record))
+                    .route("/admin/table/{table}/key/{key}", web::delete().to(storage::admin::admin_delete_record))
                     .service(get_stats)
             })
                 .bind_openssl(bind_addr.as_str(), builder)?
@@ -297,6 +305,14 @@ async fn main() -> std::io::Result<()> {
                         storage::subscription::subscribe_to_key
                     ))
                     .route("/auth/{user}", web::post().to(security::authentication::access))
+                    // Admin Dashboard Routes
+                    .route("/admin", web::get().to(storage::admin::admin_dashboard))
+                    .route("/admin/login", web::post().to(storage::admin::admin_login))
+                    .route("/admin/tables", web::get().to(storage::admin::admin_get_tables))
+                    .route("/admin/table/{table}/keys", web::get().to(storage::admin::admin_get_keys))
+                    .route("/admin/table/{table}/key/{key}", web::get().to(storage::admin::admin_get_record))
+                    .route("/admin/table/{table}/key/{key}", web::put().to(storage::admin::admin_put_record))
+                    .route("/admin/table/{table}/key/{key}", web::delete().to(storage::admin::admin_delete_record))
                     .service(get_stats)
             })
                 .bind(bind_addr.as_str())?

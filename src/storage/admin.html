@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DynaRust Admin Dashboard</title>
+    <style>
+        :root {
+            --bg-dark: #121212;
+            --bg-card: #1e1e1e;
+            --text-main: #e0e0e0;
+            --text-muted: #a0a0a0;
+            --accent: #bb86fc;
+            --accent-hover: #9965f4;
+            --danger: #cf6679;
+            --success: #03dac6;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Login Screen */
+        #login-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-dark);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        #login-form {
+            background-color: var(--bg-card);
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            width: 300px;
+        }
+
+        input {
+            width: 100%;
+            padding: 0.8rem;
+            margin-bottom: 1rem;
+            background-color: #2c2c2c;
+            border: 1px solid #444;
+            color: white;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 0.8rem;
+            background-color: var(--accent);
+            border: none;
+            color: black;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background-color: var(--accent-hover);
+        }
+
+        /* Sidebar */
+        aside {
+            width: 250px;
+            background-color: var(--bg-card);
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #tables-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 1rem 0;
+        }
+
+        .list-item {
+            padding: 0.8rem 1.5rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-left: 3px solid transparent;
+        }
+
+        .list-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .list-item.active {
+            background-color: rgba(187, 134, 252, 0.1);
+            border-left-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Main Content */
+        main {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-dark);
+        }
+
+        header {
+            padding: 1rem 2rem;
+            background-color: var(--bg-card);
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #record-view {
+            flex-grow: 1;
+            padding: 2rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        textarea {
+            width: 100%;
+            height: 300px;
+            background-color: #121212;
+            color: var(--success);
+            font-family: 'Courier New', Courier, monospace;
+            padding: 1rem;
+            border: 1px solid #444;
+            border-radius: 4px;
+            resize: vertical;
+        }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .btn-danger { background-color: var(--danger); color: white; }
+        .btn-success { background-color: var(--success); color: black; }
+
+        /* Secondary Sidebar (Keys) */
+        #keys-sidebar {
+            width: 300px;
+            background-color: #1a1a1a;
+            border-left: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #keys-list {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .key-item {
+            padding: 0.6rem 1rem;
+            font-size: 0.9rem;
+            cursor: pointer;
+            border-bottom: 1px solid #2a2a2a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .key-item:hover { background-color: #333; }
+        .key-item.active { color: var(--accent); font-weight: bold; }
+
+        .hidden { display: none !important; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-card {
+            background: #252525;
+            padding: 1rem;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen">
+        <h1 style="color: var(--accent); margin-bottom: 2rem;">DynaRust Admin</h1>
+        <div id="login-form">
+            <input type="password" id="admin-password" placeholder="Master Password">
+            <button id="login-btn">Login</button>
+            <p id="login-error" style="color: var(--danger); font-size: 0.8rem; margin-top: 1rem; text-align: center;" class="hidden">Invalid Password</p>
+        </div>
+    </div>
+
+    <aside>
+        <div class="sidebar-header">
+            <span>Tables</span>
+            <button id="refresh-tables" style="width: auto; padding: 0.2rem 0.5rem; font-size: 0.8rem;">Refresh</button>
+        </div>
+        <div id="tables-list">
+            <!-- Tables will be loaded here -->
+        </div>
+    </aside>
+
+    <main id="main-content" class="hidden">
+        <header>
+            <h2 id="current-table-name">Select a Table</h2>
+            <div class="actions">
+                <button id="create-record-btn" class="btn-success" style="width: auto; padding: 0.5rem 1rem;">+ New Record</button>
+                <button id="logout-btn" style="width: auto; padding: 0.5rem 1rem; background: #444; color: white;">Logout</button>
+            </div>
+        </header>
+
+        <div id="record-view">
+            <div id="no-record-selected" style="text-align: center; color: var(--text-muted); margin-top: 5rem;">
+                Select a key from the right sidebar to view or edit its data.
+            </div>
+            
+            <div id="editor-container" class="hidden">
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <h3 id="current-key-name">Key: <span></span></h3>
+                        <span id="version-badge" style="background: #444; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Version: 0</span>
+                    </div>
+                    <label style="display: block; margin-bottom: 0.5rem; color: var(--text-muted);">JSON Content</label>
+                    <textarea id="json-editor"></textarea>
+                    <div class="actions" style="margin-top: 1.5rem; justify-content: flex-end;">
+                        <button id="delete-btn" class="btn-danger" style="width: auto; padding: 0.6rem 1.5rem;">Delete</button>
+                        <button id="save-btn" class="btn-success" style="width: auto; padding: 0.6rem 1.5rem;">Save Changes</button>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 1.5rem;">
+                    <h3>Record Metadata</h3>
+                    <div id="metadata-view" style="font-family: monospace; font-size: 0.9rem; color: var(--text-muted);">
+                        <!-- Metadata here -->
+                    </div>
+                </div>
+            </div>
+
+            <div id="stats-view" class="hidden">
+                <h3 style="margin-top: 0;">Cluster Statistics</h3>
+                <div id="stats-content" class="stats-grid">
+                    <!-- Stats will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="keys-sidebar" class="hidden">
+        <div class="sidebar-header">
+            <span>Keys</span>
+            <input type="text" id="key-search" placeholder="Filter keys..." style="margin: 0; padding: 0.3rem; font-size: 0.8rem; width: 120px;">
+        </div>
+        <div id="keys-list">
+            <!-- Keys will be loaded here -->
+        </div>
+    </div>
+
+    <script>
+        let adminToken = localStorage.getItem('adminToken');
+        let currentTable = '';
+        let currentKey = '';
+        let currentData = null;
+
+        const API = {
+            async request(url, options = {}) {
+                options.headers = {
+                    ...options.headers,
+                    'Authorization': `Bearer ${adminToken}`,
+                    'Content-Type': 'application/json'
+                };
+                const response = await fetch(url, options);
+                if (response.status === 401) {
+                    logout();
+                    throw new Error('Unauthorized');
+                }
+                return response;
+            },
+
+            async getTables() {
+                const resp = await this.request('/admin/tables');
+                return await resp.json();
+            },
+
+            async getKeys(table) {
+                const resp = await this.request(`/admin/table/${table}/keys`);
+                return await resp.json();
+            },
+
+            async getRecord(table, key) {
+                const resp = await this.request(`/admin/table/${table}/key/${key}`);
+                return await resp.json();
+            },
+
+            async saveRecord(table, key, data) {
+                return await this.request(`/admin/table/${table}/key/${key}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(data)
+                });
+            },
+
+            async deleteRecord(table, key) {
+                return await this.request(`/admin/table/${table}/key/${key}`, {
+                    method: 'DELETE'
+                });
+            }
+        };
+
+        // UI Elements
+        const loginScreen = document.getElementById('login-screen');
+        const loginBtn = document.getElementById('login-btn');
+        const adminPass = document.getElementById('admin-password');
+        const loginError = document.getElementById('login-error');
+        const mainContent = document.getElementById('main-content');
+        const keysSidebar = document.getElementById('keys-sidebar');
+        const tablesList = document.getElementById('tables-list');
+        const keysList = document.getElementById('keys-list');
+        const jsonEditor = document.getElementById('json-editor');
+        const editorContainer = document.getElementById('editor-container');
+        const noRecordSelected = document.getElementById('no-record-selected');
+        const currentTableNameDisp = document.getElementById('current-table-name');
+        const currentKeyNameDisp = document.getElementById('current-key-name').querySelector('span');
+        const versionBadge = document.getElementById('version-badge');
+        const metadataView = document.getElementById('metadata-view');
+        const logoutBtn = document.getElementById('logout-btn');
+        const saveBtn = document.getElementById('save-btn');
+        const deleteBtn = document.getElementById('delete-btn');
+        const createRecordBtn = document.getElementById('create-record-btn');
+        const refreshTablesBtn = document.getElementById('refresh-tables');
+        const keySearch = document.getElementById('key-search');
+
+        function init() {
+            if (adminToken) {
+                showDashboard();
+                loadTables();
+            }
+        }
+
+        async function login() {
+            const password = adminPass.value;
+            const resp = await fetch('/admin/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+
+            if (resp.ok) {
+                const data = await resp.json();
+                adminToken = data.token;
+                localStorage.setItem('adminToken', adminToken);
+                showDashboard();
+                loadTables();
+                loginError.classList.add('hidden');
+            } else {
+                loginError.classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            adminToken = null;
+            localStorage.removeItem('adminToken');
+            loginScreen.classList.remove('hidden');
+            mainContent.classList.add('hidden');
+            keysSidebar.classList.add('hidden');
+        }
+
+        function showDashboard() {
+            loginScreen.classList.add('hidden');
+            mainContent.classList.remove('hidden');
+            keysSidebar.classList.remove('hidden');
+        }
+
+        async function loadTables() {
+            try {
+                const tables = await API.getTables();
+                tablesList.innerHTML = '';
+                tables.forEach(table => {
+                    const div = document.createElement('div');
+                    div.className = 'list-item';
+                    if (table === currentTable) div.classList.add('active');
+                    div.textContent = table;
+                    div.onclick = () => selectTable(table);
+                    tablesList.appendChild(div);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function selectTable(table) {
+            currentTable = table;
+            currentTableNameDisp.textContent = `Table: ${table}`;
+            document.querySelectorAll('.list-item').forEach(el => {
+                el.classList.toggle('active', el.textContent === table);
+            });
+            loadKeys();
+            noRecordSelected.classList.remove('hidden');
+            editorContainer.classList.add('hidden');
+        }
+
+        async function loadKeys() {
+            try {
+                const keys = await API.getKeys(currentTable);
+                renderKeys(keys);
+                
+                keySearch.oninput = (e) => {
+                    const filter = e.target.value.toLowerCase();
+                    const filtered = keys.filter(k => k.toLowerCase().includes(filter));
+                    renderKeys(filtered);
+                };
+            } catch (e) { console.error(e); }
+        }
+
+        function renderKeys(keys) {
+            keysList.innerHTML = '';
+            keys.forEach(key => {
+                const div = document.createElement('div');
+                div.className = 'key-item';
+                if (key === currentKey) div.classList.add('active');
+                div.textContent = key;
+                div.onclick = () => selectKey(key);
+                keysList.appendChild(div);
+            });
+        }
+
+        async function selectKey(key) {
+            currentKey = key;
+            document.querySelectorAll('.key-item').forEach(el => {
+                el.classList.toggle('active', el.textContent === key);
+            });
+            
+            try {
+                const record = await API.getRecord(currentTable, key);
+                currentData = record;
+                jsonEditor.value = JSON.stringify(record.value, null, 4);
+                currentKeyNameDisp.textContent = key;
+                versionBadge.textContent = `Version: ${record.version}`;
+                metadataView.innerHTML = `
+                    <div>Owner: ${record.owner}</div>
+                    <div>Timestamp: ${new Date(record.timestamp).toLocaleString()}</div>
+                    <div>Raw Version: ${record.version}</div>
+                `;
+                noRecordSelected.classList.add('hidden');
+                editorContainer.classList.remove('hidden');
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveChanges() {
+            try {
+                const updatedValue = JSON.parse(jsonEditor.value);
+                await API.saveRecord(currentTable, currentKey, updatedValue);
+                alert('Saved successfully');
+                selectKey(currentKey); // Reload
+            } catch (e) {
+                alert('Error saving: ' + e.message);
+            }
+        }
+
+        async function deleteRecord() {
+            if (!confirm(`Are you sure you want to delete key "${currentKey}"?`)) return;
+            try {
+                await API.deleteRecord(currentTable, currentKey);
+                currentKey = '';
+                loadKeys();
+                noRecordSelected.classList.remove('hidden');
+                editorContainer.classList.add('hidden');
+            } catch (e) {
+                alert('Error deleting: ' + e.message);
+            }
+        }
+
+        createRecordBtn.onclick = async () => {
+            const key = prompt("Enter new key name:");
+            if (!key) return;
+            currentKey = key;
+            currentData = { value: {} };
+            jsonEditor.value = "{}";
+            currentKeyNameDisp.textContent = key;
+            versionBadge.textContent = "Version: New";
+            metadataView.innerHTML = "New record (will be created on save)";
+            noRecordSelected.classList.add('hidden');
+            editorContainer.classList.remove('hidden');
+        };
+
+        loginBtn.onclick = login;
+        adminPass.onkeypress = (e) => { if (e.key === 'Enter') login(); };
+        logoutBtn.onclick = logout;
+        saveBtn.onclick = saveChanges;
+        deleteBtn.onclick = deleteRecord;
+        refreshTablesBtn.onclick = loadTables;
+
+        init();
+    </script>
+</body>
+</html>
