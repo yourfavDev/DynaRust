@@ -46,13 +46,13 @@ async fn clean_old_snapshots(dir: &PathBuf, max_snapshots: usize)
 /// 2. Encrypt it with `encrypt()`
 /// 3. Write to `./snapshots/snapshot_<ts>.json.enc`
 /// 4. Clean up old snapshots
-pub fn start_snapshot_task(state: Data<AppState>) {
+pub fn start_snapshot_task(states: &Data<AppState>) {
     let snap_limit = env::var("SNAP_LIMIT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(100);
     let snapshot_dir = PathBuf::from("./snapshots");
-
+    let state = states.clone();
     tokio::spawn(async move {
         if let Err(e) = fs::create_dir_all(&snapshot_dir).await {
             eprintln!(

@@ -85,15 +85,6 @@ impl VersionedValue {
         }
         strictly_newer
     }
-
-    pub fn merge_clock(&mut self, other: &HashMap<String, u64>) {
-        for (node, other_v) in other {
-            let self_v = self.vector_clock.entry(node.clone()).or_insert(0);
-            if *other_v > *self_v {
-                *self_v = *other_v;
-            }
-        }
-    }
 }
 
 /// The local in-memory database state.
@@ -384,15 +375,12 @@ pub async fn get_value(
             tokio::spawn(async move {
                 let _permit = permit;
                 let url = format!("http://{}/internal/{}/key/{}", target, table_repair, key_repair);
-                if let Ok(payload) = bincode::serialize(&latest_repair) {
-                    let _ = cli.put(&url)
-                        .header("X-Internal-Request", "true")
-                        .header("SECRET", &secret_repair)
-                        .header("Content-Type", "application/octet-stream")
-                        .body(payload)
-                        .send()
-                        .await;
-                }
+                let _ = cli.put(&url)
+                    .header("X-Internal-Request", "true")
+                    .header("SECRET", &secret_repair)
+                    .json(&latest_repair)
+                    .send()
+                    .await;
             });
         }
     }
@@ -484,8 +472,7 @@ pub async fn patch_value(
                     .put(&url)
                     .header("X-Internal-Request", "true")
                     .header("SECRET", &secret_clone)
-                    .header("Content-Type", "application/octet-stream")
-                    .body(bincode::serialize(&payload).unwrap())
+                    .json(&payload)
                     .send()
                     .await
                 {
@@ -583,8 +570,7 @@ pub async fn put_value(
                     .put(&url)
                     .header("X-Internal-Request", "true")
                     .header("SECRET", &secret_clone)
-                    .header("Content-Type", "application/octet-stream")
-                    .body(bincode::serialize(&payload).unwrap())
+                    .json(&payload)
                     .send()
                     .await
                 {
@@ -610,22 +596,20 @@ pub async fn put_value_internal(
     path: web::Path<(String, String)>,
     state: web::Data<AppState>,
     sub_manager: web::Data<SubscriptionManager>,
-    body: web::Bytes,
+    body: web::Json<VersionedValue>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
     // 1️⃣ Cluster‐secret check
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_default();
-    match req.headers().get("SECRET") {
-        Some(h) if h.to_str().unwrap_or("") == cluster_secret => {}
-        _ => return HttpResponse::Unauthorized().finish(),
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let provided_secret = req.headers().get("SECRET").and_then(|h| h.to_str().ok()).unwrap_or("");
+    
+    if provided_secret != cluster_secret {
+        return HttpResponse::Unauthorized().finish();
     }
 
     // 2️⃣ Merge the incoming VersionedValue by version number
-    let incoming: VersionedValue = match bincode::deserialize(&body) {
-        Ok(v) => v,
-        Err(_) => return HttpResponse::BadRequest().finish(),
-    };
+    let incoming = body.into_inner();
     let table = state.store.entry(table_name.clone()).or_default();
 
     let cached = table

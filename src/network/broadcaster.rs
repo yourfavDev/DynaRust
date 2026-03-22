@@ -217,8 +217,12 @@ async fn send_membership_update(
     url: &str,
     membership: &HashMap<String, NodeInfo>,
 ) -> Result<(), String> {
+    let cluster_token = env::var("CLUSTER_SECRET")
+        .unwrap_or_else(|_| "default_secret".to_string());
+
     match client.post(url)
         .header("Content-Type", "application/octet-stream")
+        .header("X-Cluster-Token", &cluster_token)
         .body(bincode::serialize(membership).unwrap())
         .send().await {
         Ok(resp) => {
@@ -256,7 +260,7 @@ pub async fn update_membership(
     // 1. Authentication Check
     // In production, load this once at startup rather than on every request
     let expected_token = env::var("CLUSTER_SECRET")
-        .unwrap_or_else(|_| "default_insecure_secret".to_string());
+        .unwrap_or_else(|_| "default_secret".to_string());
     
     let is_authenticated = req.headers()
         .get("X-Cluster-Token")
@@ -277,9 +281,9 @@ pub async fn update_membership(
     let mut updated = false;
 
     for (node, info) in incoming.into_iter() {
-        // 2. Input Validation (Basic check to ensure it looks like a URL)
-        if !node.starts_with("http://") && !node.starts_with("https://") {
-            continue; // Ignore malformed node addresses
+        // 2. Input Validation (ensure it's not empty and has no spaces)
+        if node.is_empty() || node.contains(' ') {
+            continue;
         }
 
         // For nodes not in our membership, add them safely

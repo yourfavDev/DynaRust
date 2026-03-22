@@ -2,7 +2,7 @@
 
 DynaRust is a high-performance, distributed key–JSON‑value store built in Rust. It's designed for massive concurrency, reliable consistency, and seamless scalability 🔄.
 
-It combines **lock-free concurrent storage**, **binary internal replication**, **causal consistency via Vector Clocks**, and a **SWIM-inspired gossip protocol** to deliver a fault‑tolerant, horizontally scalable datastore.
+It combines **lock-free concurrent storage**, **robust JSON internal replication**, **causal consistency via Vector Clocks**, and a **SWIM-inspired gossip protocol** to deliver a fault‑tolerant, horizontally scalable datastore.
 
 With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. Optimized for modern hardware, a single node can comfortably sustain peak traffic of up to **10,000+ live connections** 🔥—and you can increase capacity linearly by adding more nodes to your cluster.
 
@@ -11,7 +11,7 @@ With its advanced real‑time update capabilities, DynaRust pushes live changes 
 | **Metric**             | **Value**                                     |
 |------------------------|-----------------------------------------------|
 | Storage Engine         | DashMap (Granular Locking)                    |
-| Internal Protocol      | Bincode (Binary Serialization)                |
+| Internal Protocol      | JSON (Reliable Serialization)                 |
 | Consistency Model      | Eventual Consistency w/ Vector Clocks         |
 | Replication Strategy   | Consistent Hashing Ring                       |
 | Reliability            | Read Repair + Exponential Backoff Retries     |

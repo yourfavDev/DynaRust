@@ -68,7 +68,10 @@ fn validate_admin_token(req: &HttpRequest) -> bool {
                     &Validation::default(),
                 ) {
                     Ok(token_data) => token_data.claims.admin,
-                    Err(_) => false,
+                    Err(e) => {
+                        eprintln!("Admin token validation failed: {}", e);
+                        false
+                    },
                 };
             }
         }
@@ -243,8 +246,7 @@ async fn replicate_admin_change(
                 .put(&url)
                 .header("X-Internal-Request", "true")
                 .header("SECRET", &secret_clone)
-                .header("Content-Type", "application/octet-stream")
-                .body(bincode::serialize(&payload).unwrap())
+                .json(&payload)
                 .send()
                 .await;
         });

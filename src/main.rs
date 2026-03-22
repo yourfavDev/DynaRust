@@ -94,7 +94,20 @@ async fn main() -> std::io::Result<()> {
 
     // (Optionally) Ensure the default table exists in memory.
     state.store.entry("default".to_string()).or_default();
-    start_snapshot_task(state.clone());
+    start_snapshot_task(&state);
+
+    // Initialize cluster data with dynamic membership.
+    let mut initial_nodes = HashMap::new();
+    initial_nodes.insert(
+        current_node.clone(),
+        NodeInfo {
+            status: NodeStatus::Active,
+            last_heartbeat: current_timestamp(),
+        },
+    );
+    let cluster_data = web::Data::new(ClusterData {
+        nodes: Arc::new(RwLock::new(initial_nodes)),
+    });
 
     // If a join node is provided, join its cluster and merge its global state.
     if args.len() >= 3 {
@@ -116,6 +129,10 @@ async fn main() -> std::io::Result<()> {
                 if response.status().is_success() {
                     if let Ok(nodes) = response.json::<HashMap<String, NodeInfo>>().await {
                         println!("Joined cluster: {:?}", nodes);
+                        let mut nodes_guard = cluster_data.nodes.write().await;
+                        for (node, info) in nodes {
+                            nodes_guard.insert(node, info);
+                        }
                     }
                 } else {
                     println!("Failed to join cluster (status = {})", response.status());
@@ -167,23 +184,10 @@ async fn main() -> std::io::Result<()> {
     // Spawn the periodic cold save task.
     tokio::spawn(cold_save(state.clone(), 30));
 
-    // Initialize cluster data with dynamic membership.
-    let mut initial_nodes = HashMap::new();
-    initial_nodes.insert(
-        current_node.clone(),
-        NodeInfo {
-            status: NodeStatus::Active,
-            last_heartbeat: current_timestamp(),
-        },
-    );
-    let cluster_data = web::Data::new(ClusterData {
-        nodes: Arc::new(RwLock::new(initial_nodes)),
-    });
-
     // Spawn the membership synchronization (heartbeat) task.
     let cluster_clone = cluster_data.clone();
     let current_clone = current_node.clone();
-    tokio::spawn(membership_sync(cluster_clone, current_clone, 60));
+    tokio::spawn(membership_sync(cluster_clone, current_clone, 5));
     let subscription_manager = web::Data::new(SubscriptionManager::new());
 
     // Initialize metrics collector and middleware
