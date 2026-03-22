@@ -110,19 +110,15 @@ pub struct WalEntry {
 /// Saves the current in‑memory state (snapshot) for each table to disk.
 /// Processes one table at a time, and encrypts data in 1MB chunks to prevent OOM.
 pub async fn save_to_cold(state: web::Data<AppState>) -> io::Result<()> {
-    let table_names: Vec<String> = {
-        let store = state.store.read().await;
-        store.keys().cloned().collect()
-    };
+    let table_names: Vec<String> = state.store.iter().map(|kv| kv.key().clone()).collect();
 
     for table_name in table_names {
-        // Grab the read lock just long enough to clone this specific table
-        let table_data = {
-            let store = state.store.read().await;
-            match store.get(&table_name) {
-                Some(data) => data.clone(),
-                None => continue,
-            }
+        let table_data = match state.store.get(&table_name) {
+            Some(data) => {
+                // Clone the inner DashMap into a HashMap for the blocking task
+                data.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect::<HashMap<String, VersionedValue>>()
+            },
+            None => continue,
         };
 
         let state_clone = state.clone();
@@ -278,8 +274,13 @@ pub async fn load_all_tables(state: &web::Data<AppState>) -> io::Result<()> {
     .await??;
     
     // Apply the newly built store to the live application state
-    let mut store_write = state.store.write().await;
-    *store_write = new_store;
+    state.store.clear();
+    for (table_name, table_data) in new_store {
+        let local_table = state.store.entry(table_name).or_default();
+        for (key, val) in table_data {
+            local_table.insert(key, val);
+        }
+    }
     Ok(())
 }
 /// Spawns a background Tokio task that periodically saves the current state to disk.

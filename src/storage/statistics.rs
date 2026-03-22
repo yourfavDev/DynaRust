@@ -133,10 +133,11 @@ pub async fn get_stats(
     cluster_data: Data<ClusterData>,
 ) -> impl Responder {
     // Count keys per table.
-    let store = state.store.read().await;
     let mut tables = HashMap::new();
     let mut total_keys = 0;
-    for (table, map) in store.iter() {
+    for kv in state.store.iter() {
+        let table = kv.key();
+        let map = kv.value();
         tables.insert(table.clone(), map.len());
         total_keys += map.len();
     }

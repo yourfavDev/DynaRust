@@ -19,25 +19,27 @@ use storage::engine::{
     VersionedValue, get_global_store
 };
 use storage::persistance::{cold_save, load_all_tables};
-use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership};
+use network::broadcaster::{membership_sync, heartbeat, get_membership, update_membership, indirect_ping};
 use crate::storage::engine::put_value_internal;
 use crate::storage::snapshoting::start_snapshot_task;
 use crate::storage::statistics::{get_stats, MetricsCollector, MetricsMiddleware};
 use crate::storage::subscription::SubscriptionManager;
+
+use dashmap::DashMap;
 
 /// Declare APP_STATE globally so that it’s available throughout the module.
 static APP_STATE: OnceCell<web::Data<AppState>> = OnceCell::new();
 
 /// Merge the remote state for a given table into the local state.
 fn merge_table_state(
-    local: &mut HashMap<String, VersionedValue>,
+    local: &DashMap<String, VersionedValue>,
     remote: HashMap<String, VersionedValue>,
 ) {
     for (key, remote_val) in remote {
         local
             .entry(key)
             .and_modify(|local_val| {
-                if remote_val.version > local_val.version {
+                if remote_val.dominates(local_val) || (!local_val.dominates(&remote_val) && remote_val.timestamp > local_val.timestamp) {
                     *local_val = remote_val.clone();
                 }
             })
@@ -47,16 +49,12 @@ fn merge_table_state(
 
 /// Merge the entire global remote store into the local store.
 fn merge_global_store(
-    local: &mut HashMap<String, HashMap<String, VersionedValue>>,
+    local: &DashMap<String, DashMap<String, VersionedValue>>,
     remote: HashMap<String, HashMap<String, VersionedValue>>,
 ) {
     for (table, remote_table) in remote {
-        local
-            .entry(table.clone())
-            .and_modify(|local_table| {
-                merge_table_state(local_table, remote_table.clone());
-            })
-            .or_insert(remote_table);
+        let local_table = local.entry(table).or_default();
+        merge_table_state(&local_table, remote_table);
     }
 }
 
@@ -84,7 +82,7 @@ async fn main() -> std::io::Result<()> {
     // Initialize the local in‑memory multi‑table key–value store.
     let state = web::Data::new(AppState {
         base_dir: "./data",
-        store: RwLock::new(HashMap::new()),
+        store: DashMap::new(),
     });
     let _ = APP_STATE.set(state.clone());
 
@@ -95,10 +93,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // (Optionally) Ensure the default table exists in memory.
-    {
-        let mut store = state.store.write().await;
-        store.entry("default".to_string()).or_insert(HashMap::new());
-    }
+    state.store.entry("default".to_string()).or_default();
     start_snapshot_task(state.clone());
 
     // If a join node is provided, join its cluster and merge its global state.
@@ -143,9 +138,8 @@ async fn main() -> std::io::Result<()> {
                             HashMap::new()
                         });
                     {
-                        let mut store = state.store.write().await;
-                        merge_global_store(&mut store, remote_store);
-                        println!("Merged global cold storage: {:?}", *store);
+                        merge_global_store(&state.store, remote_store);
+                        println!("Merged global cold storage: {:?}", state.store);
                     }
                 } else {
                     eprintln!(
@@ -231,6 +225,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/join", web::post().to(join_cluster))
                     .route("/membership", web::get().to(get_membership))
                     .route("/update_membership", web::post().to(update_membership))
+                    .route("/indirect_ping", web::post().to(indirect_ping))
                     .route("/heartbeat", web::get().to(heartbeat))
                     .route(
                         "/internal/{table}/key/{key}",
@@ -284,6 +279,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/join", web::post().to(join_cluster))
                     .route("/membership", web::get().to(get_membership))
                     .route("/update_membership", web::post().to(update_membership))
+                    .route("/indirect_ping", web::post().to(indirect_ping))
                     .route("/heartbeat", web::get().to(heartbeat))
                     .route(
                         "/internal/{table}/key/{key}",

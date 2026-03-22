@@ -4,9 +4,27 @@ use std::time::Duration;
 use reqwest;
 use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use serde_json::json;
+use rand::seq::SliceRandom;
 use crate::storage::engine::{
     current_timestamp, ClusterData, NodeInfo, NodeStatus,
 };
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct IndirectPingRequest {
+    pub target: String,
+}
+
+/// Respond to indirect ping requests by pinging the target node
+pub async fn indirect_ping(
+    req: web::Json<IndirectPingRequest>,
+    client: web::Data<reqwest::Client>,
+) -> impl Responder {
+    let url = build_url(&req.target, "heartbeat");
+    match client.get(&url).timeout(Duration::from_secs(2)).send().await {
+        Ok(resp) if resp.status().is_success() => HttpResponse::Ok().json(json!({"status": "ok"})),
+        _ => HttpResponse::ServiceUnavailable().json(json!({"status": "failed"})),
+    }
+}
 
 /// Read DYNA_MODE and return either "https" or "http".
 fn get_scheme() -> &'static str {
@@ -56,43 +74,81 @@ pub async fn membership_sync(
     }
 }
 
-/// Check health of all nodes and update their status
+/// Check health of nodes using SWIM-inspired protocol
 async fn check_node_health(
     cluster_data: &web::Data<ClusterData>,
     client: &reqwest::Client,
     current_addr: &str,
     interval_sec: u64,
 ) {
-    let mut nodes_guard = cluster_data.nodes.write().await;
-    // 2x interval in milliseconds
+    let nodes_to_check = {
+        let guard = cluster_data.nodes.read().await;
+        let mut potential_nodes: Vec<String> = guard
+            .iter()
+            .filter(|(node, info)| *node != current_addr && (info.status == NodeStatus::Active || info.status == NodeStatus::Suspect))
+            .map(|(node, _)| node.clone())
+            .collect();
+
+        let mut rng = rand::thread_rng();
+        potential_nodes.shuffle(&mut rng);
+        potential_nodes.into_iter().take(3).collect::<Vec<_>>()
+    };
+
     let timeout_threshold = (interval_sec as u128) * 2000;
 
-    for (node, info) in nodes_guard.iter_mut() {
-        // Skip self-check
-        if node == current_addr {
-            continue;
-        }
-        let url = build_url(node, "heartbeat");
+    for target in nodes_to_check {
+        let url = build_url(&target, "heartbeat");
+        let mut success = false;
 
-        match client
-            .get(&url)
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                // Successful heartbeat - mark node as active
-                info.last_heartbeat = current_timestamp();
-                info.status = NodeStatus::Active;
+        // 1. Direct heartbeat
+        if let Ok(resp) = client.get(&url).timeout(Duration::from_secs(2)).send().await {
+            if resp.status().is_success() {
+                success = true;
             }
-            _ => {
-                // Failed heartbeat - update status based on current state
+        }
+
+        // 2. Indirect ping via 2 other nodes if direct ping failed
+        if !success {
+            let helpers = {
+                let guard = cluster_data.nodes.read().await;
+                let mut h: Vec<String> = guard.keys()
+                    .filter(|&addr| addr != current_addr && addr != &target && guard.get(addr).map(|i| i.status == NodeStatus::Active).unwrap_or(false))
+                    .cloned()
+                    .collect();
+                let mut rng = rand::thread_rng();
+                h.shuffle(&mut rng);
+                h.into_iter().take(2).collect::<Vec<_>>()
+            };
+
+            for helper in helpers {
+                let indirect_url = build_url(&helper, "indirect_ping");
+                if let Ok(resp) = client.post(&indirect_url)
+                    .json(&IndirectPingRequest { target: target.clone() })
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await {
+                    if resp.status().is_success() {
+                        success = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Update node status
+        let mut guard = cluster_data.nodes.write().await;
+        if let Some(info) = guard.get_mut(&target) {
+            if success {
+                info.status = NodeStatus::Active;
+                info.last_heartbeat = current_timestamp();
+            } else {
                 update_node_status(info, timeout_threshold);
             }
         }
     }
 
-    println!("Node {} membership: {:?}", current_addr, *nodes_guard);
+    let guard = cluster_data.nodes.read().await;
+    println!("Node {} membership: {:?}", current_addr, *guard);
 }
 
 /// Update a node's status based on heartbeat failures
@@ -113,25 +169,29 @@ fn update_node_status(info: &mut NodeInfo, timeout_threshold: u128) {
     }
 }
 
-/// Send membership information to all other nodes
+/// Send membership information to up to 3 random nodes
 pub async fn gossip_membership(
     cluster_data: &web::Data<ClusterData>,
     client: &reqwest::Client,
     current_addr: &str,
 ) {
-    // Get a snapshot of current membership
-    let nodes_snapshot = {
+    // Get a snapshot and select random targets
+    let (nodes_snapshot, targets) = {
         let guard = cluster_data.nodes.read().await;
-        guard.clone()
+        let mut potential_targets: Vec<String> = guard.keys()
+            .filter(|&addr| addr != current_addr && guard.get(addr).map(|i| i.status == NodeStatus::Active).unwrap_or(false))
+            .cloned()
+            .collect();
+        
+        let mut rng = rand::thread_rng();
+        potential_targets.shuffle(&mut rng);
+        let targets = potential_targets.into_iter().take(3).collect::<Vec<_>>();
+        (guard.clone(), targets)
     };
 
-    // Send membership updates to each node
-    for (node, _) in nodes_snapshot.iter() {
-        if node == current_addr {
-            continue;
-        }
-
-        let gossip_url = build_url(node, "update_membership");
+    // Send membership updates to selected random nodes
+    for node in targets {
+        let gossip_url = build_url(&node, "update_membership");
         let membership_clone = nodes_snapshot.clone();
         let client_clone = client.clone();
         let node_clone = node.clone();
@@ -157,7 +217,10 @@ async fn send_membership_update(
     url: &str,
     membership: &HashMap<String, NodeInfo>,
 ) -> Result<(), String> {
-    match client.post(url).json(membership).send().await {
+    match client.post(url)
+        .header("Content-Type", "application/octet-stream")
+        .body(bincode::serialize(membership).unwrap())
+        .send().await {
         Ok(resp) => {
             if resp.status().is_success() {
                 Ok(())
@@ -188,7 +251,7 @@ const MAX_CLUSTER_SIZE: usize = 100;
 pub async fn update_membership(
     req: HttpRequest, // Added to inspect headers
     cluster_data: web::Data<ClusterData>,
-    payload: web::Json<HashMap<String, NodeInfo>>,
+    body: web::Bytes,
 ) -> impl Responder {
     // 1. Authentication Check
     // In production, load this once at startup rather than on every request
@@ -207,7 +270,10 @@ pub async fn update_membership(
     }
 
     let mut local_guard = cluster_data.nodes.write().await;
-    let incoming = payload.into_inner();
+    let incoming: HashMap<String, NodeInfo> = match bincode::deserialize(&body) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
     let mut updated = false;
 
     for (node, info) in incoming.into_iter() {

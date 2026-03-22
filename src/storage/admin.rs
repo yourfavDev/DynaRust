@@ -81,8 +81,7 @@ use actix_web::web::Json;
 pub async fn admin_get_tables(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     if !validate_admin_token(&req) { return HttpResponse::Unauthorized().finish(); }
     
-    let store = state.store.read().await;
-    let tables: Vec<String> = store.keys().cloned().collect();
+    let tables: Vec<String> = state.store.iter().map(|kv| kv.key().clone()).collect();
     HttpResponse::Ok().json(tables)
 }
 
@@ -94,9 +93,8 @@ pub async fn admin_get_keys(
     if !validate_admin_token(&req) { return HttpResponse::Unauthorized().finish(); }
     
     let table_name = path.into_inner();
-    let store = state.store.read().await;
-    if let Some(table) = store.get(&table_name) {
-        let keys: Vec<String> = table.keys().cloned().collect();
+    if let Some(table) = state.store.get(&table_name) {
+        let keys: Vec<String> = table.iter().map(|kv| kv.key().clone()).collect();
         HttpResponse::Ok().json(keys)
     } else {
         HttpResponse::NotFound().finish()
@@ -111,10 +109,9 @@ pub async fn admin_get_record(
     if !validate_admin_token(&req) { return HttpResponse::Unauthorized().finish(); }
     
     let (table_name, key) = path.into_inner();
-    let store = state.store.read().await;
-    if let Some(table) = store.get(&table_name) {
+    if let Some(table) = state.store.get(&table_name) {
         if let Some(record) = table.get(&key) {
-            return HttpResponse::Ok().json(record);
+            return HttpResponse::Ok().json(record.clone());
         }
     }
     HttpResponse::NotFound().finish()
@@ -137,14 +134,13 @@ pub async fn admin_put_record(
     
     // Admin PUT bypasses ownership check but updates version
     let new_value = {
-        let mut db = state.store.write().await;
-        let table = db.entry(table_name.clone()).or_default();
+        let table = state.store.entry(table_name.clone()).or_default();
 
-        if let Some(existing) = table.get_mut(&key_val) {
-            existing.update(body.0.clone());
+        if let Some(mut existing) = table.get_mut(&key_val) {
+            existing.update(body.0.clone(), current_addr.get_ref().clone());
             existing.clone()
         } else {
-            let v = VersionedValue::new(body.0.clone(), "admin".to_string());
+            let v = VersionedValue::new(body.0.clone(), "admin".to_string(), current_addr.get_ref().clone());
             table.insert(key_val.clone(), v.clone());
             v
         }
@@ -175,8 +171,7 @@ pub async fn admin_delete_record(
     
     let (table_name, key_val) = path.into_inner();
     
-    let mut store = state.store.write().await;
-    if let Some(table) = store.get_mut(&table_name) {
+    if let Some(table) = state.store.get(&table_name) {
         table.remove(&key_val);
     }
     
@@ -248,7 +243,8 @@ async fn replicate_admin_change(
                 .put(&url)
                 .header("X-Internal-Request", "true")
                 .header("SECRET", &secret_clone)
-                .json(&payload)
+                .header("Content-Type", "application/octet-stream")
+                .body(bincode::serialize(&payload).unwrap())
                 .send()
                 .await;
         });

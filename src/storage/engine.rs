@@ -25,6 +25,8 @@ struct Claims {
     exp: usize,
 }
 
+use dashmap::DashMap;
+
 //
 // CORE DATA STRUCTURES
 //
@@ -32,34 +34,65 @@ struct Claims {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionedValue {
     pub value: HashMap<String, Value>,
-    pub version: u64,
+    pub vector_clock: HashMap<String, u64>,
     pub timestamp: u128,
     pub owner: String,
 }
 
 impl VersionedValue {
-    pub fn new(value: HashMap<String, Value>, owner: String) -> Self {
+    pub fn new(value: HashMap<String, Value>, owner: String, node_id: String) -> Self {
         let ts = current_timestamp();
+        let mut vector_clock = HashMap::new();
+        vector_clock.insert(node_id, 1);
         Self {
             value,
-            version: 1,
+            vector_clock,
             timestamp: ts,
             owner,
         }
     }
 
-    pub fn update(&mut self, value: HashMap<String, Value>) {
+    pub fn update(&mut self, value: HashMap<String, Value>, node_id: String) {
         self.value = value;
-        self.version += 1;
+        let counter = self.vector_clock.entry(node_id).or_insert(0);
+        *counter += 1;
         self.timestamp = current_timestamp();
     }
 
-    pub fn patch(&mut self, updates: HashMap<String, Value>) {
+    pub fn patch(&mut self, updates: HashMap<String, Value>, node_id: String) {
         for (k, v) in updates {
             self.value.insert(k, v);
         }
-        self.version += 1;
+        let counter = self.vector_clock.entry(node_id).or_insert(0);
+        *counter += 1;
         self.timestamp = current_timestamp();
+    }
+
+    pub fn dominates(&self, other: &Self) -> bool {
+        let mut strictly_newer = false;
+        for (node, other_v) in &other.vector_clock {
+            let self_v = self.vector_clock.get(node).copied().unwrap_or(0);
+            if self_v < *other_v {
+                return false;
+            } else if self_v > *other_v {
+                strictly_newer = true;
+            }
+        }
+        for (node, self_v) in &self.vector_clock {
+            if !other.vector_clock.contains_key(node) && *self_v > 0 {
+                strictly_newer = true;
+            }
+        }
+        strictly_newer
+    }
+
+    pub fn merge_clock(&mut self, other: &HashMap<String, u64>) {
+        for (node, other_v) in other {
+            let self_v = self.vector_clock.entry(node.clone()).or_insert(0);
+            if *other_v > *self_v {
+                *self_v = *other_v;
+            }
+        }
     }
 }
 
@@ -67,7 +100,7 @@ impl VersionedValue {
 pub struct AppState {
     pub base_dir: &'static str,
     /// Maps table names to the table's key-value store.
-    pub store: RwLock<HashMap<String, HashMap<String, VersionedValue>>>,
+    pub store: DashMap<String, DashMap<String, VersionedValue>>,
 }
 
 /// Shared cluster data.
@@ -96,7 +129,7 @@ pub struct KeysRequest {
     pub keys: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct JoinRequest {
     node: String,
     secret: String,
@@ -136,22 +169,37 @@ pub fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: us
         return Vec::new();
     }
 
-    // Hash the key to determine ordering
+    let replication_factor = replication_factor.min(nodes.len());
+    let mut ring = std::collections::BTreeMap::new();
+    let virtual_nodes = 10; 
+
+    for node in nodes {
+        for v in 0..virtual_nodes {
+            let mut hasher = DefaultHasher::new();
+            format!("{}#{}", node, v).hash(&mut hasher);
+            ring.insert(hasher.finish(), node.clone());
+        }
+    }
+
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
-    let hash = hasher.finish();
-    let total_nodes = nodes.len();
-    let primary_index = (hash % (total_nodes as u64)) as usize;
+    let key_hash = hasher.finish();
 
-    // Select targets up to replication factor
-    let mut targets = Vec::with_capacity(replication_factor.min(total_nodes));
-    targets.push(nodes[primary_index].clone());
-    let mut i = 1;
-    while targets.len() < replication_factor && i < total_nodes {
-        let idx = (primary_index + i) % total_nodes;
-        targets.push(nodes[idx].clone());
-        i += 1;
+    let mut targets = Vec::with_capacity(replication_factor);
+    
+    // Chain iterators to wrap around the ring
+    let iter1 = ring.range(key_hash..).map(|(_, v)| v);
+    let iter2 = ring.range(..key_hash).map(|(_, v)| v);
+    
+    for node in iter1.chain(iter2) {
+        if !targets.contains(node) {
+            targets.push(node.clone());
+            if targets.len() == replication_factor {
+                break;
+            }
+        }
     }
+
     targets
 }
 
@@ -199,17 +247,17 @@ pub async fn get_value(
     state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
+    client: web::Data<reqwest::Client>,
+    sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
     // 1️⃣ Internal Replication Request - Bypass Auth
     // Internal nodes need to read raw data for syncing.
     if req.headers().contains_key("X-Internal-Request") {
-        let store = state.store.read().await;
-        let result = store
+        let result = state.store
             .get(&table_name)
-            .and_then(|table| table.get(&key_val))
-            .cloned();
+            .and_then(|table| table.get(&key_val).map(|v| v.clone()));
         return HttpResponse::Ok().json(result);
     }
 
@@ -227,30 +275,27 @@ pub async fn get_value(
     let replication_factor = active_nodes.len();
     let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
 
-    let client = reqwest::Client::new();
-    let mut futures_vec: Vec<BoxFuture<'static, Result<Option<VersionedValue>, String>>> = Vec::new();
+    let mut futures_vec: Vec<BoxFuture<'static, Result<(String, Option<VersionedValue>), String>>> = Vec::new();
 
     for target in targets.into_iter() {
+        let target_clone = target.clone();
         if target == *current_addr.get_ref() {
             let state_clone = state.clone();
             let table_name_clone = table_name.clone();
             let key_clone = key_val.clone();
             
-            // Use a READ lock here, not a WRITE lock
-            let fut: BoxFuture<'static, Result<Option<VersionedValue>, String>> =
+            let fut: BoxFuture<'static, Result<(String, Option<VersionedValue>), String>> =
                 Box::pin(async move {
-                    let store = state_clone.store.read().await;
-                    let result = store
+                    let result = state_clone.store
                         .get(&table_name_clone)
-                        .and_then(|table| table.get(&key_clone))
-                        .cloned();
-                    Ok(result)
+                        .and_then(|table| table.get(&key_clone).map(|v| v.clone()));
+                    Ok((target_clone, result))
                 });
             futures_vec.push(fut);
         } else {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
-            let client_inner = client.clone();
-            let fut: BoxFuture<'static, Result<Option<VersionedValue>, String>> =
+            let client_inner = client.get_ref().clone();
+            let fut: BoxFuture<'static, Result<(String, Option<VersionedValue>), String>> =
                 Box::pin(async move {
                     match client_inner
                         .get(&url)
@@ -262,17 +307,17 @@ pub async fn get_value(
                         Ok(resp) => {
                             if resp.status().is_success() {
                                 match resp.json::<Option<VersionedValue>>().await {
-                                    Ok(v) => Ok(v),
+                                    Ok(v) => Ok((target_clone, v)),
                                     Err(e) => Err(format!(
                                         "Error parsing JSON from {}: {}",
-                                        target, e
+                                        target_clone, e
                                     )),
                                 }
                             } else {
-                                Err(format!("Error from {}: {}", target, resp.status()))
+                                Err(format!("Error from {}: {}", target_clone, resp.status()))
                             }
                         }
-                        Err(e) => Err(format!("Request error to {}: {}", target, e)),
+                        Err(e) => Err(format!("Request error to {}: {}", target_clone, e)),
                     }
                 });
             futures_vec.push(fut);
@@ -282,11 +327,20 @@ pub async fn get_value(
     // Wait for all cluster responses
     let results = futures_util::future::join_all(futures_vec).await;
     let mut valid_results = Vec::new();
+    let mut all_responses = Vec::new();
+
     for res in results {
-        if let Ok(Some(val)) = res {
-            valid_results.push(val);
-        } else if let Err(err) = res {
-            println!("Error during read: {}", err);
+        match res {
+            Ok((addr, Some(val))) => {
+                valid_results.push(val.clone());
+                all_responses.push((addr, Some(val)));
+            }
+            Ok((addr, None)) => {
+                all_responses.push((addr, None));
+            }
+            Err(err) => {
+                println!("Error during read: {}", err);
+            }
         }
     }
 
@@ -299,12 +353,51 @@ pub async fn get_value(
 
     let latest = valid_results
         .into_iter()
-        .max_by(|a, b| a.version.cmp(&b.version))
+        .max_by(|a, b| {
+            if a.dominates(b) {
+                std::cmp::Ordering::Greater
+            } else if b.dominates(a) {
+                std::cmp::Ordering::Less
+            } else {
+                a.timestamp.cmp(&b.timestamp)
+            }
+        })
         .unwrap();
 
-    // 5️⃣ Enforce Ownership!
-    // We check ownership against the definitive 'latest' record, 
-    // guaranteeing no unauthorized access regardless of which node held the data.
+    // 5️⃣ Read Repair: Update out-of-date or missing nodes
+    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
+    for (addr, opt_v) in all_responses {
+        let needs_repair = match opt_v {
+            None => true,
+            Some(v) => !v.dominates(&latest) && v.timestamp < latest.timestamp,
+        };
+
+        if needs_repair {
+            let cli = client.get_ref().clone();
+            let latest_repair = latest.clone();
+            let table_repair = table_name.clone();
+            let key_repair = key_val.clone();
+            let secret_repair = secret.clone();
+            let target = addr.clone();
+            let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+
+            tokio::spawn(async move {
+                let _permit = permit;
+                let url = format!("http://{}/internal/{}/key/{}", target, table_repair, key_repair);
+                if let Ok(payload) = bincode::serialize(&latest_repair) {
+                    let _ = cli.put(&url)
+                        .header("X-Internal-Request", "true")
+                        .header("SECRET", &secret_repair)
+                        .header("Content-Type", "application/octet-stream")
+                        .body(payload)
+                        .send()
+                        .await;
+                }
+            });
+        }
+    }
+
+    // 6️⃣ Enforce Ownership!
     if latest.owner != user {
         return HttpResponse::Unauthorized().json(serde_json::json!({
             "error": "Not authorized to view record"
@@ -336,16 +429,15 @@ pub async fn patch_value(
 
     // 2️⃣ Apply local update with ownership check
     let new_value = {
-        let mut db = state.store.write().await;
-        let table = db.entry(table_name.clone()).or_default();
+        let table = state.store.entry(table_name.clone()).or_default();
 
-        if let Some(existing) = table.get_mut(&key_val) {
+        if let Some(mut existing) = table.get_mut(&key_val) {
             if existing.owner != user {
                 return HttpResponse::Unauthorized().json(serde_json::json!({
                     "error": "Not authorized to update this record"
                 }));
             }
-            existing.patch(body.0.clone());
+            existing.patch(body.0.clone(), current_addr.get_ref().clone());
             existing.clone()
         } else {
             return HttpResponse::NotFound().json(serde_json::json!({
@@ -384,15 +476,28 @@ pub async fn patch_value(
 
         tokio::spawn(async move {
             let _permit = permit; // held until this future ends
-            if let Err(e) = cli
-                .put(&url)
-                .header("X-Internal-Request", "true")
-                .header("SECRET", &secret_clone)
-                .json(&payload)
-                .send()
-                .await
-            {
-                eprintln!("replication to {} failed: {}", target, e);
+            let mut retries = 3;
+            let mut backoff = std::time::Duration::from_millis(100);
+
+            while retries > 0 {
+                match cli
+                    .put(&url)
+                    .header("X-Internal-Request", "true")
+                    .header("SECRET", &secret_clone)
+                    .header("Content-Type", "application/octet-stream")
+                    .body(bincode::serialize(&payload).unwrap())
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => break,
+                    _ => {
+                        retries -= 1;
+                        if retries > 0 {
+                            tokio::time::sleep(backoff).await;
+                            backoff *= 2;
+                        }
+                    }
+                }
             }
         });
     }
@@ -423,19 +528,18 @@ pub async fn put_value(
 
     // 2️⃣ Apply local update with ownership check
     let new_value = {
-        let mut db = state.store.write().await;
-        let table = db.entry(table_name.clone()).or_default();
+        let table = state.store.entry(table_name.clone()).or_default();
 
-        if let Some(existing) = table.get_mut(&key_val) {
+        if let Some(mut existing) = table.get_mut(&key_val) {
             if existing.owner != user {
                 return HttpResponse::Unauthorized().json(serde_json::json!({
                     "error": "Not authorized to update this record"
                 }));
             }
-            existing.update(body.0.clone());
+            existing.update(body.0.clone(), current_addr.get_ref().clone());
             existing.clone()
         } else {
-            let v = VersionedValue::new(body.0.clone(), user.clone());
+            let v = VersionedValue::new(body.0.clone(), user.clone(), current_addr.get_ref().clone());
             table.insert(key_val.clone(), v.clone());
             v
         }
@@ -471,15 +575,28 @@ pub async fn put_value(
 
         tokio::spawn(async move {
             let _permit = permit; // held until this future ends
-            if let Err(e) = cli
-                .put(&url)
-                .header("X-Internal-Request", "true")
-                .header("SECRET", &secret_clone)
-                .json(&payload)
-                .send()
-                .await
-            {
-                eprintln!("replication to {} failed: {}", target, e);
+            let mut retries = 3;
+            let mut backoff = std::time::Duration::from_millis(100);
+
+            while retries > 0 {
+                match cli
+                    .put(&url)
+                    .header("X-Internal-Request", "true")
+                    .header("SECRET", &secret_clone)
+                    .header("Content-Type", "application/octet-stream")
+                    .body(bincode::serialize(&payload).unwrap())
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => break,
+                    _ => {
+                        retries -= 1;
+                        if retries > 0 {
+                            tokio::time::sleep(backoff).await;
+                            backoff *= 2;
+                        }
+                    }
+                }
             }
         });
     }
@@ -493,7 +610,7 @@ pub async fn put_value_internal(
     path: web::Path<(String, String)>,
     state: web::Data<AppState>,
     sub_manager: web::Data<SubscriptionManager>,
-    body: web::Json<VersionedValue>,
+    body: web::Bytes,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
 
@@ -505,14 +622,16 @@ pub async fn put_value_internal(
     }
 
     // 2️⃣ Merge the incoming VersionedValue by version number
-    let incoming = body.into_inner();
-    let mut db = state.store.write().await;
-    let table = db.entry(table_name.clone()).or_default();
+    let incoming: VersionedValue = match bincode::deserialize(&body) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+    let table = state.store.entry(table_name.clone()).or_default();
 
     let cached = table
         .entry(key_val.clone())
         .and_modify(|existing| {
-            if incoming.version > existing.version {
+            if incoming.dominates(existing) || (!existing.dominates(&incoming) && incoming.timestamp > existing.timestamp) {
                 *existing = incoming.clone();
             }
         })
@@ -543,8 +662,7 @@ pub async fn delete_value(
 
     // Internal requests bypass auth.
     if req.headers().contains_key("X-Internal-Request") {
-        let mut store = state.store.write().await;
-        if let Some(table) = store.get_mut(&table_name) {
+        if let Some(table) = state.store.get(&table_name) {
             table.remove(&key_val);
         }
         sub_manager
@@ -560,18 +678,9 @@ pub async fn delete_value(
     };
 
     // Check if the requester is the owner.
-    let authorized = {
-        let store = state.store.read().await;
-        if let Some(table) = store.get(&table_name) {
-            if let Some(existing) = table.get(&key_val) {
-                existing.owner == user
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
+    let authorized = state.store.get(&table_name)
+        .and_then(|table| table.get(&key_val).map(|v| v.owner == user))
+        .unwrap_or(false);
 
     if !authorized {
         return HttpResponse::Unauthorized().json(json!({
@@ -579,19 +688,16 @@ pub async fn delete_value(
         }));
     }
 
-    let local_status = {
-        let mut store = state.store.write().await;
-        if let Some(table) = store.get_mut(&table_name) {
-            if table.remove(&key_val).is_some() {
-                "Deleted locally"
-            } else {
-                "Key not found locally"
-            }
+    let local_status = if let Some(table) = state.store.get(&table_name) {
+        if table.remove(&key_val).is_some() {
+            "Deleted locally"
         } else {
-            "Table not found locally"
+            "Key not found locally"
         }
-        .to_string()
-    };
+    } else {
+        "Table not found locally"
+    }
+    .to_string();
 
     sub_manager
         .notify(&table_name, &key_val, KeyEvent::Deleted)
@@ -614,14 +720,26 @@ pub async fn delete_value(
 
             tokio::spawn(async move {
                 let _permit = permit; // Permit is held until the deletion request completes
-                let result = client_clone
-                    .delete(&url)
-                    .header("X-Internal-Request", "true")
-                    .timeout(std::time::Duration::from_secs(3))
-                    .send()
-                    .await;
-                if let Err(e) = result {
-                    println!("Deletion replication error to {}: {}", target, e);
+                let mut retries = 3;
+                let mut backoff = std::time::Duration::from_millis(100);
+
+                while retries > 0 {
+                    match client_clone
+                        .delete(&url)
+                        .header("X-Internal-Request", "true")
+                        .timeout(std::time::Duration::from_secs(3))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => break,
+                        _ => {
+                            retries -= 1;
+                            if retries > 0 {
+                                tokio::time::sleep(backoff).await;
+                                backoff *= 2;
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -638,9 +756,8 @@ pub async fn get_table_store(
     state: web::Data<AppState>,
 ) -> impl Responder {
     let table_name = table.into_inner();
-    let store = state.store.read().await;
-    if let Some(table_db) = store.get(&table_name) {
-        HttpResponse::Ok().json(table_db)
+    if let Some(table_db) = state.store.get(&table_name) {
+        HttpResponse::Ok().json(&*table_db)
     } else {
         HttpResponse::NotFound().json(json!({"error": "Table not found"}))
     }
@@ -651,9 +768,8 @@ pub async fn get_all_keys(
     state: web::Data<AppState>,
 ) -> impl Responder {
     let table_name = table.into_inner();
-    let store = state.store.read().await;
-    if let Some(table_db) = store.get(&table_name) {
-        let keys: Vec<String> = table_db.keys().cloned().collect();
+    if let Some(table_db) = state.store.get(&table_name) {
+        let keys: Vec<String> = table_db.iter().map(|kv| kv.key().clone()).collect();
         HttpResponse::Ok().json(keys)
     } else {
         HttpResponse::NotFound().json(json!({"error": "Table not found"}))
@@ -667,9 +783,8 @@ pub async fn get_multiple_keys(
 ) -> impl Responder {
     let table_name = table.into_inner();
     let requested_keys = keys_request.into_inner().keys;
-    let store = state.store.read().await;
 
-    if let Some(table_data) = store.get(&table_name) {
+    if let Some(table_data) = state.store.get(&table_name) {
         let mut result: HashMap<String, VersionedValue> = HashMap::new();
         for key in requested_keys {
             if let Some(value) = table_data.get(&key) {
@@ -753,6 +868,5 @@ pub async fn get_global_store(
             return HttpResponse::Unauthorized().body("Missing API key");
         }
     };
-    let store = state.store.read().await;
-    HttpResponse::Ok().json(store.clone())
+    HttpResponse::Ok().json(&state.store)
 }

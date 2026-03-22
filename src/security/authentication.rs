@@ -1,5 +1,4 @@
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
-use actix_web::web::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -12,7 +11,7 @@ use crate::storage::engine::{get_active_nodes, get_jwt_secret, get_replication_n
 use crate::storage::subscription::{KeyEvent, SubscriptionManager};
 
 /// Incoming JSON payload.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AccessToken {
     pub secret: String,
 }
@@ -27,25 +26,27 @@ struct Claims {
 pub async fn access(
     req: HttpRequest,
     user: web::Path<String>,
-    secret_req: Json<AccessToken>,
+    body: web::Bytes,
     state: web::Data<AppState>,
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     sub_manager: web::Data<SubscriptionManager>,
 ) -> impl Responder {
     let username = user.into_inner();
-    let provided_secret = secret_req.into_inner().secret;
 
     println!("Access request for user: {}", username);
 
     // Internal replication requests bypass authentication
     if req.headers().contains_key("X-Internal-Request") {
+        let provided_secret = match bincode::deserialize::<AccessToken>(&body) {
+            Ok(t) => t.secret,
+            Err(_) => return HttpResponse::BadRequest().finish(),
+        };
+
         println!("Processing internal replication request for {}", username);
 
         // Simplified internal replication handling
-        let mut store = state.store.write().await;
-        let auth_table: &mut HashMap<String, VersionedValue> =
-            store.entry("auth".to_string()).or_insert_with(HashMap::new);
+        let auth_table = state.store.entry("auth".to_string()).or_default();
 
         // For internal requests, use the provided hash directly
         let mut value_map = HashMap::new();
@@ -55,7 +56,7 @@ pub async fn access(
             .and_then(|h| h.to_str().ok())
             .unwrap_or(&username);
 
-        let new_rec = VersionedValue::new(value_map, String::from(user_header));
+        let new_rec = VersionedValue::new(value_map, String::from(user_header), current_addr.get_ref().clone());
         auth_table.insert(username.clone(), new_rec.clone());
 
         println!("Successfully replicated user: {}", username);
@@ -70,11 +71,13 @@ pub async fn access(
     }
 
     // Regular authentication flow
+    let provided_secret = match serde_json::from_slice::<AccessToken>(&body) {
+        Ok(t) => t.secret,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
     let is_new_user;
     let new_value = {
-        let mut store = state.store.write().await;
-        let auth_table: &mut HashMap<String, VersionedValue> =
-            store.entry("auth".to_string()).or_insert_with(HashMap::new);
+        let auth_table = state.store.entry("auth".to_string()).or_default();
 
         let record = auth_table.get(&username);
         if record.is_none() {
@@ -87,10 +90,10 @@ pub async fn access(
             let mut value_map = HashMap::new();
             value_map.insert("secret".to_string(), json!(hashed));
 
-            let new_rec = VersionedValue::new(value_map, username.clone());
+            let new_rec = VersionedValue::new(value_map, username.clone(), current_addr.get_ref().clone());
             auth_table.insert(username.clone(), new_rec.clone());
             is_new_user = true;
-            new_rec.clone()
+            new_rec
         } else {
             println!("Login attempt for existing user: {}", username);
             // Login attempt
@@ -159,13 +162,14 @@ pub async fn access(
                 let fut = async move {
                     println!("Sending replication request to: {}", url);
                     // Create the payload with the same structure as AccessToken
-                    let payload = json!({"secret": secret_clone});
+                    let payload = AccessToken { secret: secret_clone };
 
                     let result = client_clone
                         .post(&url)
                         .header("X-Internal-Request", "true")
                         .header("User", &username_clone)
-                        .json(&payload)
+                        .header("Content-Type", "application/octet-stream")
+                        .body(bincode::serialize(&payload).unwrap())
                         .send()
                         .await;
 

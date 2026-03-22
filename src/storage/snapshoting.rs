@@ -70,8 +70,7 @@ pub fn start_snapshot_task(state: Data<AppState>) {
                 format!("snapshot_{}.json.enc", ts)
             );
 
-            let store = state.store.read().await;
-            match serde_json::to_string_pretty(&*store) {
+            match serde_json::to_string_pretty(&state.store) {
                 Ok(plain) => match encrypt(&plain) {
                     Ok(enc_b64) => {
                         if let Err(e) = fs::write(&file, enc_b64.as_bytes())
