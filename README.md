@@ -4,6 +4,7 @@ DynaRust is a high-performance, distributed key-value store built in Rust. Desig
 
 Optimized for modern hardware, a single node can sustain peak traffic of up to **10,000+ live connections** with sub-5 ms latency for real-time updates. Cluster capacity scales linearly by adding more nodes.
 
+
 ## 📊 Performance (v2)
 
 | Metric | Implementation Details |
@@ -50,6 +51,56 @@ Security is enforced from user access down to node-to-node transport:
 3.  **Transport Security:** Native HTTPS mode is supported. Run `bash cert.sh` to generate a `.p12` certificate and set `DYNA_MODE=https`.
 
 -----
+
+
+## 📦 Official Rust Client SDK
+
+We provide an official, highly-optimized async Rust client for seamlessly interacting with your DynaRust cluster: [**`dynarust_client` on crates.io**](https://www.google.com/search?q=%5Bhttps://crates.io/crates/dynarust_client%5D\(https://crates.io/crates/dynarust_client\)).
+
+The SDK provides a wrapper around the REST API, allowing you to interact with the cluster using strongly-typed Rust structs, automatic JSON deserialization, and async/await syntax. It includes built-in JWT authentication management and native streaming for Server-Sent Events (SSE).
+
+**Installation:**
+
+```bash
+cargo add dynarust_client
+```
+
+**Quick Usage Example:**
+
+```rust
+use dynarust_client::models::{DynaClient, DynaError};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UserProfile {
+    username: String,
+    level: u32,
+    is_active: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), DynaError> {
+    let client = DynaClient::new("http://localhost:6660");
+
+    // Authenticate (auto-saves JWT for future requests)
+    client.auth("player_1", "super_secret_password").await?;
+
+    // Write Data (PUT)
+    let profile = UserProfile {
+        username: "player_1".to_string(),
+        level: 42,
+        is_active: true,
+    };
+    client.put_value("users", "profile_data", &profile).await?;
+
+    // Read Data (GET) - Deserializes directly into your custom struct
+    let fetched = client.get_value::<UserProfile>("users", "profile_data").await?;
+    println!("Fetched level: {}", fetched.value.level);
+
+    Ok(())
+}
+```
+
 
 ## 🧠 Architecture Overview
 
