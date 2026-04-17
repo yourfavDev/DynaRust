@@ -1,4 +1,5 @@
 use actix_web::web::Data;
+use log::warn;
 use serde_json;
 use std::{env, io, path::PathBuf, time::SystemTime};
 use tokio::{fs, time::{self, Duration}};
@@ -35,7 +36,10 @@ async fn clean_old_snapshots(dir: &PathBuf, max_snapshots: usize)
             .into_iter()
             .take(snaps_cloned.len() - max_snapshots)
         {
-            let _ = fs::remove_file(old).await;
+            match fs::remove_file(&old).await {
+                Ok(_) => { println!("Removed old snapshot from path: {}", old.to_str().unwrap())},
+                Err(error) => {warn!("{:}", error)}
+            };
         }
     }
     Ok(())
@@ -62,7 +66,7 @@ pub fn start_snapshot_task(states: &Data<AppState>) {
             return;
         }
 
-        let mut ticker = time::interval(Duration::from_secs(60 * 60));
+        let mut ticker = time::interval(Duration::from_secs(3600));
         loop {
             ticker.tick().await;
             let ts = current_timestamp();

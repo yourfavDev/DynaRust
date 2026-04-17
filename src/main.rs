@@ -62,7 +62,6 @@ fn merge_global_store(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().unwrap();
-    // Usage: <program> <current_node_address> [join_node_address]
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <current_node_address> [join_node_address]", args[0]);
@@ -86,7 +85,6 @@ async fn main() -> std::io::Result<()> {
     });
     let _ = APP_STATE.set(state.clone());
 
-    // Load cold storage (snapshot + WAL replay) from disk.
     match load_all_tables(&state).await {
         Ok(_) => println!("Cold storage loaded"),
         Err(e) => eprintln!("Error loading cold storage: {}", e),
@@ -115,7 +113,7 @@ async fn main() -> std::io::Result<()> {
 
         // Send join request.
         let client = reqwest::Client::new();
-        let join_url = format!("http://{}/join", join_node);
+        let join_url = format!("{}/join", join_node);
         match client
             .post(&join_url)
             .json(&json!({
@@ -143,7 +141,7 @@ async fn main() -> std::io::Result<()> {
 
 
         // Pull the remote state for all tables.
-        let store_url = format!("http://{}/store", join_node);
+        let store_url = format!("{}/store", join_node);
         match client.get(&store_url).header("x-api-key", std::env::var("CLUSTER_SECRET").unwrap_or_default()).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
