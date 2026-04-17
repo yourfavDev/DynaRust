@@ -242,14 +242,16 @@ pub async fn get_value(
     sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
-    // 1️⃣ Internal Replication Request - Bypass Auth
-    // Internal nodes need to read raw data for syncing.
-    if req.headers().contains_key("X-Internal-Request") {
-        let result = state.store
-            .get(&table_name)
-            .and_then(|table| table.get(&key_val).map(|v| v.clone()));
-        return HttpResponse::Ok().json(result);
+    // 1️⃣ Internal Replication Request - Verify Secret
+    if let Some(internal_req) = req.headers().get("X-Internal-Request") {
+        if internal_req.to_str().unwrap_or("") == cluster_secret {
+            let result = state.store
+                .get(&table_name)
+                .and_then(|table| table.get(&key_val).map(|v| v.clone()));
+            return HttpResponse::Ok().json(result);
+        }
     }
 
     // 2️⃣ Authenticate external user via JWT
@@ -286,11 +288,14 @@ pub async fn get_value(
         } else {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_inner = client.get_ref().clone();
+            let secret_clone = cluster_secret.clone();
+            
             let fut: BoxFuture<'static, Result<(String, Option<VersionedValue>), String>> =
                 Box::pin(async move {
                     match client_inner
                         .get(&url)
-                        .header("X-Internal-Request", "true")
+                        // FIX: Send the actual secret instead of "true"
+                        .header("X-Internal-Request", &secret_clone)
                         .timeout(std::time::Duration::from_secs(3))
                         .send()
                         .await
@@ -356,7 +361,6 @@ pub async fn get_value(
         .unwrap();
 
     // 5️⃣ Read Repair: Update out-of-date or missing nodes
-    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
     for (addr, opt_v) in all_responses {
         let needs_repair = match opt_v {
             None => true,
@@ -368,7 +372,7 @@ pub async fn get_value(
             let latest_repair = latest.clone();
             let table_repair = table_name.clone();
             let key_repair = key_val.clone();
-            let secret_repair = secret.clone();
+            let secret_repair = cluster_secret.clone();
             let target = addr.clone();
             let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
 
@@ -376,7 +380,8 @@ pub async fn get_value(
                 let _permit = permit;
                 let url = format!("http://{}/internal/{}/key/{}", target, table_repair, key_repair);
                 let _ = cli.put(&url)
-                    .header("X-Internal-Request", "true")
+                    // FIX: Send the actual secret instead of "true"
+                    .header("X-Internal-Request", &secret_repair)
                     .header("SECRET", &secret_repair)
                     .json(&latest_repair)
                     .send()
@@ -394,6 +399,7 @@ pub async fn get_value(
 
     HttpResponse::Ok().json(latest)
 }
+
 // external PATCH handler
 #[allow(clippy::too_many_arguments)]
 pub async fn patch_value(
@@ -445,7 +451,7 @@ pub async fn patch_value(
     drop(cluster);
 
     let targets = get_replication_nodes(&key_val, &active, active.len());
-    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     for target in targets {
         if target == *current_addr.get_ref() {
@@ -460,7 +466,7 @@ pub async fn patch_value(
             target, table_name, key_val
         );
 
-        let secret_clone = secret.clone();
+        let secret_clone = cluster_secret.clone();
 
         tokio::spawn(async move {
             let _permit = permit; // held until this future ends
@@ -470,7 +476,8 @@ pub async fn patch_value(
             while retries > 0 {
                 match cli
                     .put(&url)
-                    .header("X-Internal-Request", "true")
+                    // FIX: Send the actual secret instead of "true"
+                    .header("X-Internal-Request", &secret_clone)
                     .header("SECRET", &secret_clone)
                     .json(&payload)
                     .send()
@@ -491,7 +498,6 @@ pub async fn patch_value(
 
     HttpResponse::Ok().json(new_value)
 }
-
 // external PUT handler
 #[allow(clippy::too_many_arguments)]
 pub async fn put_value(
@@ -543,7 +549,7 @@ pub async fn put_value(
     drop(cluster);
 
     let targets = get_replication_nodes(&key_val, &active, active.len());
-    let secret = env::var("CLUSTER_SECRET").unwrap_or_default();
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     for target in targets {
         if target == *current_addr.get_ref() {
@@ -558,7 +564,7 @@ pub async fn put_value(
             target, table_name, key_val
         );
 
-        let secret_clone = secret.clone();
+        let secret_clone = cluster_secret.clone();
 
         tokio::spawn(async move {
             let _permit = permit; // held until this future ends
@@ -568,7 +574,8 @@ pub async fn put_value(
             while retries > 0 {
                 match cli
                     .put(&url)
-                    .header("X-Internal-Request", "true")
+                    // FIX: Send the actual secret instead of "true"
+                    .header("X-Internal-Request", &secret_clone)
                     .header("SECRET", &secret_clone)
                     .json(&payload)
                     .send()
@@ -589,7 +596,6 @@ pub async fn put_value(
 
     HttpResponse::Created().json(new_value)
 }
-
 // internal PUT handler (must be mounted at: /internal/{table}/key/{key})
 pub async fn put_value_internal(
     req: HttpRequest,
@@ -638,21 +644,23 @@ pub async fn delete_value(
     cluster_data: web::Data<ClusterData>,
     current_addr: web::Data<String>,
     sub_manager: web::Data<SubscriptionManager>,
-    // ADDED: Shared client and semaphore
     client: web::Data<reqwest::Client>,
     sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
-    // Internal requests bypass auth.
-    if req.headers().contains_key("X-Internal-Request") {
-        if let Some(table) = state.store.get(&table_name) {
-            table.remove(&key_val);
+    // FIX: Internal requests bypass auth ONLY if the secret matches.
+    if let Some(internal_req) = req.headers().get("X-Internal-Request") {
+        if internal_req.to_str().unwrap_or("") == cluster_secret {
+            if let Some(table) = state.store.get(&table_name) {
+                table.remove(&key_val);
+            }
+            sub_manager
+                .notify(&table_name, &key_val, KeyEvent::Deleted)
+                .await;
+            return HttpResponse::Ok().json(json!({"message": "Deleted"}));
         }
-        sub_manager
-            .notify(&table_name, &key_val, KeyEvent::Deleted)
-            .await;
-        return HttpResponse::Ok().json(json!({"message": "Deleted"}));
     }
 
     // External requests require a valid JWT token.
@@ -698,6 +706,7 @@ pub async fn delete_value(
         if target != *current_addr.get_ref() {
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
+            let secret_clone = cluster_secret.clone();
             
             // Acquire permit to cap concurrent outgoing replication tasks
             let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
@@ -710,7 +719,8 @@ pub async fn delete_value(
                 while retries > 0 {
                     match client_clone
                         .delete(&url)
-                        .header("X-Internal-Request", "true")
+                        // FIX: Send the actual secret instead of "true"
+                        .header("X-Internal-Request", &secret_clone)
                         .timeout(std::time::Duration::from_secs(3))
                         .send()
                         .await
@@ -731,6 +741,7 @@ pub async fn delete_value(
     
     HttpResponse::Ok().json(json!({"message": local_status}))
 }
+
 //
 // TABLE MANAGEMENT HANDLERS
 //

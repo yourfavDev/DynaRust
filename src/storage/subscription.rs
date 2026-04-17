@@ -33,7 +33,6 @@ impl SubscriptionManager {
         if let Some(sender) = channels.get(&identifier) {
             sender.subscribe()
         } else {
-            // Create a new channel if none exists; here we use a buffer of 16 events.
             let (tx, rx) = broadcast::channel(16);
             channels.insert(identifier, tx);
             rx
@@ -54,11 +53,8 @@ impl SubscriptionManager {
             }
         };
 
-        // If there were no receivers, acquire a write lock to clean up
         if should_cleanup {
             let mut channels = self.channels.write().await;
-            // Double-check: a new subscriber might have joined between dropping 
-            // the read lock and acquiring the write lock!
             if let Some(sender) = channels.get(&identifier) {
                 if sender.receiver_count() == 0 {
                     channels.remove(&identifier);

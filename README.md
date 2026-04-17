@@ -1,321 +1,63 @@
 # 🦀 DynaRust: Distributed Key-Value Store
 
-DynaRust is a high-performance, distributed key–JSON‑value store built in Rust. It's designed for massive concurrency, reliable consistency, and seamless scalability 🔄.
+DynaRust is a high-performance, distributed key-value store built in Rust. Designed for massive concurrency, reliable consistency, and seamless scalability, it leverages lock-free concurrent storage, robust binary internal replication, causal consistency via Vector Clocks, and a SWIM-inspired gossip protocol to deliver a fault‑tolerant, horizontally scalable datastore.
 
-It combines **lock-free concurrent storage**, **robust JSON internal replication**, **causal consistency via Vector Clocks**, and a **SWIM-inspired gossip protocol** to deliver a fault‑tolerant, horizontally scalable datastore.
+Optimized for modern hardware, a single node can sustain peak traffic of up to **10,000+ live connections** with sub-5 ms latency for real-time updates. Cluster capacity scales linearly by adding more nodes.
 
-With its advanced real‑time update capabilities, DynaRust pushes live changes with latencies below 5 ms 🚀. Optimized for modern hardware, a single node can comfortably sustain peak traffic of up to **10,000+ live connections** 🔥—and you can increase capacity linearly by adding more nodes to your cluster.
+## 📊 Performance (v2)
 
----
-## Performance (v2)
-| **Metric**             | **Value**                                     |
-|------------------------|-----------------------------------------------|
-| Storage Engine         | DashMap (Granular Locking)                    |
-| Internal Protocol      | JSON (Reliable Serialization)                 |
-| Consistency Model      | Eventual Consistency w/ Vector Clocks         |
-| Replication Strategy   | Consistent Hashing Ring                       |
-| Reliability            | Read Repair + Exponential Backoff Retries     |
-| Gossip Protocol        | SWIM (O(1) Scalable Membership)               |
-| GET Latency            | ~5-10 ms                                      |
-| SSE Capacity           | 10,000+ concurrent connections per node       |
+| Metric | Implementation Details |
+| :--- | :--- |
+| **Storage Engine** | DashMap (Granular Shard-based Locking) |
+| **Internal Protocol** | Bincode (Fast, Compact Binary Serialization) |
+| **Consistency Model** | Eventual Consistency via Vector Clocks |
+| **Replication Strategy**| Consistent Hashing Ring with Virtual Nodes |
+| **Reliability** | Read Repair + Exponential Backoff Retries |
+| **Gossip Protocol** | SWIM-inspired ($O(1)$ Scalable Membership) |
 
-### While inserting ~300 rows/sec we had a SSE client open on a key flawlessly getting live updates in <5 ms (Cheapest AWS EC2)
----
 
-## 🛜 Main node running:
+## 📸 Cluster in Action
+
+**Main Node Running:**
 ![main](https://github.com/yourfavDev/DynaRust/blob/42013f18f1f4d0ede1cad81ed1249e42f12f2951/docs/main.png)
 ## ⏎ Second node joins the main node (forming a cluster)
 ![second](https://github.com/yourfavDev/DynaRust/blob/42013f18f1f4d0ede1cad81ed1249e42f12f2951/docs/second.png)
 
+-----
+
 ## ✨ Key Features
 
-*   **⚡️ MASSIVE CONCURRENCY (DashMap):**
-    The storage engine uses granular, shard-based locking instead of global `RwLock`s. This allows simultaneous writes across different keys and tables without bottlenecking the entire system.
+  * **Massive Concurrency:** Utilizes granular, shard-based locking (via `DashMap`) instead of global `RwLock`s, preventing bottlenecks during simultaneous read/write operations across different tables and keys.
+  * **Causal Consistency:** Employs Vector Clocks for version tracking, accurately monitoring causality across distributed nodes and automatically resolving concurrent updates to ensure data integrity.
+  * **Intelligent Replication & Reliability:**
+      * **Consistent Hashing:** Minimizes data remapping when nodes dynamically join or leave the cluster.
+      * **Read Repair:** `GET` requests check replicas; stale versions are automatically repaired in the background.
+      * **Binary Replication:** Node-to-node communication uses Bincode, reducing CPU usage and network saturation.
+  * **Scalable Membership:** Network overhead for health checks remains constant regardless of cluster size via an indirect-probing SWIM gossip protocol.
+  * **Real-Time Updates:** Clients can subscribe to keys via Server-Sent Events (SSE) to receive instant change notifications.
+  * **High Availability & Persistence:** Automated failover routing, periodic JSON snapshots, and Write-Ahead Logging (WAL) to a local `storage.db` ensure data durability.
 
-*   **🚀 BINARY REPLICATION (Bincode):**
-    Node-to-node communication is now powered by Bincode. This binary format is significantly faster and more compact than JSON, reducing CPU usage and network saturation during high-load replication.
+-----
 
-*   **🕙 CAUSAL CONSISTENCY (Vector Clocks):**
-    Version tracking has graduated from simple integers to full **Vector Clocks**. DynaRust can now accurately track causality across distributed nodes, automatically resolving concurrent updates and ensuring data integrity.
+## 🔒 Security Architecture
 
-*   **🎯 CONSISTENT HASHING:**
-    Data is distributed using a consistent hashing ring with virtual nodes. This minimizes data movement when nodes join or leave, ensuring only a small fraction of keys are remapped.
+Security is enforced from user access down to node-to-node transport:
 
-*   **🛡️ RELIABILITY (Read Repair & Retries):**
-    - **Read Repair:** Every `GET` request automatically checks all replicas. If a stale version is detected, a background task immediately "repairs" the outdated nodes with the latest value.
-    - **Retries:** Outgoing replication now uses exponential backoff. Temporary network glitches no longer lead to data divergence.
+1.  **Access Control:** All `PUT`, `PATCH`, and `DELETE` operations require a JWT Bearer token. Only the verified owner of a record can modify or delete it.
+2.  **Cluster Authentication:** \* Each node must have a `JWT_SECRET` configured to start.
+      * Nodes must present a shared secret (`CLUSTER_SECRET` environment variable) to join the cluster.
+      * A SHA256 encryption key is embedded at compile time (via `bash encryption.sh && cargo build --release`).
+3.  **Transport Security:** Native HTTPS mode is supported. Run `bash cert.sh` to generate a `.p12` certificate and set `DYNA_MODE=https`.
 
-*   **🛰️ SCALABLE MEMBERSHIP (SWIM Gossip):**
-    The cluster uses a SWIM-inspired gossip protocol. Network overhead for health checks stays constant ($O(1)$ per node) regardless of cluster size. Indirect probing ensures highly accurate failure detection.
+-----
 
-*   **🔥 REAL‑TIME UPDATES (SSE):**
-    Instant updates using Server‑Sent Events (SSE). Subscribe to a key and receive changes in < 5 ms.
-    ```bash
-    curl -N http://localhost:8080/notifications/subscribe/statusKey
-    ```
----
+## 🧠 Architecture Overview
 
-### 🔒 **Security**
-
-- **Access Control:**
-    - **Read:** Only the owner can read the record (passed via bearer header token)
-    - **Write/Delete:** Only the record’s owner (as specified in the `owner` field) can modify or delete it.
-    - **Enforcement:** All `PUT` and `DELETE` operations require an `Authorization` header. The server verifies that the requester matches the record’s owner.
-
-- **Cluster Security:**
-  - At compile time a SHA256 encryption key is embeded in the compiled binary (if that changes somehow in the future (recompile binary with different key) you won't be able to load the table, steps to properly compile are: run bash encryption.sh && cargo build --release and distribute only the binary under target/release/ to your nodes);
-    - Each node should have a JWT_SECRET set, without this env var the node won't even start
-        - Each node must present a **secret token** (set via the `CLUSTER_SECRET` environment variable) to join the cluster, ensuring only trusted nodes participate.
-
-- **Transport Security (HTTPS):**
-    - **Easy Certificate Generation:**
-        - Run `bash cert.sh`, provide a password, and a `.p12` certificate will be generated under the `cert/` directory.
-    - **HTTPS Mode:**
-        - Set `DYNA_MODE=https` to enable HTTPS
-
----
-
-**_Security is enforced at every layer: from user access to node-to-node communication, ensuring your data remains private and protected._**
-*   **🌐 Distributed Storage:**
-    Data is automatically partitioned and spread across all nodes in the cluster.
-
-*   **🗄️ Automatic Snapshots:**
-    Every 60 minutes DynaRust writes a JSON snapshot of the entire in‑memory store to `./snapshots/snapshot_<ts>.json`.
-    By default only the last 100 snapshots are kept; older files are pruned automatically.
-    You can override the retention limit with the `SNAP_LIMIT` environment variable (e.g. `SNAP_LIMIT=200`).
-
-*   **✅ High Availability:**
-    If one node fails, the remaining nodes continue to serve requests for the available data.
-
-*   **🔄 Dynamic Cluster Membership:**
-    Nodes can join or leave the cluster seamlessly without manual re‑configuration.
-
-*   **🤝 Automatic State Sync:**
-    New or returning nodes fetch the latest state from the cluster automatically.
-
-*   **💾 Persistent Storage:**
-    Data is saved to a local `storage.db` file to prevent data loss upon node restarts.
-
-*   **🔌 RESTful API:**
-    A simple HTTP interface (using `GET`, `PUT`, `DELETE`) makes it easy to interact with your data.
-
----
-### Updated API Endpoints (v2)
-
-All operations except **GET** require a valid JWT in the `Authorization: Bearer <token>` header.
-
-1. **🛂 Register / Log In (HTTP POST)**  
-   Register a new user or log in an existing one.  
-   - URL: `/auth/{user}`  
-   - Body:  
-     ```json
-     { "secret": "my_password" }
-     ```  
-   - Responses:  
-     • `200 OK` and  
-       - On first call (user didn’t exist):  
-         ```json
-         { "status": "User created" }
-         ```  
-       - On subsequent calls with correct secret:  
-         ```json
-         { "token": "<JWT‑TOKEN‑HERE>" }
-         ```  
-     • `400 Bad Request` if user exists on register  
-     • `401 Unauthorized` if secret is wrong  
-
-2. **✍️ Store or Update a Value (HTTP PUT)**  
-   Create or update a value under `{table}/{key}`.  
-   - URL: `/{table}/key/{key}`  
-   - Headers:  
-     ```
-     Content-Type: application/json  
-     Authorization: Bearer <JWT‑TOKEN>
-     ```  
-   - Body:  
-     ```json
-     { "value": { ... } }
-     ```  
-   - Success:  
-     • `201 Created`  
-     • Body (VersionedValue):  
-       ```json
-       {
-         "value": { ... },
-         "version": 1,
-         "timestamp": 1618880821123,
-         "owner": "alice"
-       }
-       ```  
-   - Errors:  
-     • `401 Unauthorized` if missing/invalid JWT or not owner on update  
-
-3. **🛠️ Partially Update a Value (HTTP PATCH)**  
-   Merge updates into an existing value under `{table}/{key}`. Only the owner can patch.
-   - URL: `/{table}/key/{key}`  
-   - Headers:  
-     ```
-     Content-Type: application/json  
-     Authorization: Bearer <JWT‑TOKEN>
-     ```  
-   - Body:  
-     ```json
-     { "new_field": "updated_data" }
-     ```  
-   - Success:  
-     • `200 OK`  
-     • Body (Updated VersionedValue):  
-       ```json
-       {
-         "value": { "original_field": "...", "new_field": "updated_data" },
-         "version": 2,
-         "timestamp": 1618880825000,
-         "owner": "alice"
-       }
-       ```  
-   - Errors:  
-     • `401 Unauthorized` if missing/invalid JWT or not owner  
-     • `404 Not Found` if key/table missing  
-
-4. **🔍 Retrieve a Value (HTTP GET)**  
-   Anyone can fetch a key’s latest value.  
-   - URL: `/{table}/key/{key}`  
-   - Success:  
-     • `200 OK`  
-     • Body:  
-       ```json
-       {
-         "value": { ... },
-         "version": 1,
-         "timestamp": 1618880821123,
-         "owner": "alice"
-       }
-       ```  
-     • `404 Not Found` if key/table missing  
-
-5. **🗑️ Delete a Value (HTTP DELETE)**  
-   Only the owner may delete.  
-   - URL: `/{table}/key/{key}`  
-   - Header:  
-     ```
-     Authorization: Bearer <JWT‑TOKEN>
-     ```  
-   - Success:  
-     • `200 OK`  
-     • Body:  
-       ```json
-       { "message": "Deleted locally" }
-       ```  
-   - Errors:  
-     • `401 Unauthorized` if no JWT or not owner  
-     • `404 Not Found` if key/table missing  
-
-6. **📚 Fetch Entire Table Store (HTTP GET)**  
-   List all key→VersionedValue pairs in a table.  
-   - URL: `/{table}/store`  
-   - Success:  
-     • `200 OK`  
-     • Body:  
-       ```json
-       {
-         "key1": { "value":{...},"version":2,…,"owner":"bob" },
-         "key2": { … }
-       }
-       ```  
-   - `404 Not Found` if table missing  
-
-7. **🔑 List or Batch‑Fetch Keys**  
-   7.1 **GET** `/{table}/keys`  
-       • `200 OK` →  
-         ```json
-         ["key1","key2",…]
-         ```  
-   7.2 **POST** `/{table}/keys`  
-       - Body:  
-         ```json
-         ["key1","key2","key3"]
-         ```  
-       - `200 OK` →  
-         ```json
-         {
-           "key1": { "value":{...},"version":… },
-           "key3": { … }
-         }
-         ```  
-       (non‑existent keys are omitted)
-
-8. **🔔 Subscribe to Real‑Time Updates (SSE)**  
-   Instant updates on a single key.  
-   - URL: `/{table}/subscribe/{key}`  
-   - Usage:  
-     ```bash
-     curl -N http://localhost:6660/{table}/subscribe/{key}
-     ```  
-   - Each update is a JSON event:  
-     ```json
-     { "event": "Updated", "value": { … } }
-     ```
-
----
-
-#### Quick `curl` Examples
-
-```bash
-# 1) Register Alice
-curl -i -X POST http://localhost:6660/auth/alice \
-  -H "Content-Type: application/json" \
-  -d '{"secret":"s3cr3t"}'
-
-# 2) Log in (get token)
-TOKEN=$(curl -s -X POST http://localhost:6660/auth/alice \
-  -H "Content-Type: application/json" \
-  -d '{"secret":"s3cr3t"}' | jq -r .token)
-
-# 3) PUT (must include token)
-curl -i -X PUT http://localhost:6660/default/key/foo \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"value": {"name": "bar"}}'
-
-# 4) PATCH (partially update)
-curl -i -X PATCH http://localhost:6660/default/key/foo \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"age": 30}'
-
-# 5) GET
-curl -i http://localhost:6660/default/key/foo
-
-# 6) DELETE (owner only)
-curl -i -X DELETE http://localhost:6660/default/key/foo \
-  -H "Authorization: Bearer $TOKEN"
-
-# 7) Node stats
-curl http://localhost:6660/stats
-```
-
-> ⚠️ PUT/PATCH/DELETE without a valid JWT → **401 Unauthorized**  
-> 🔍 GET is always open (no auth needed).
----
-
-## 🧠 How it Works (Conceptual Overview)
-
-DynaRust uses eventual consistency via state synchronization:
-
-1.  **👤 Client Request:** A client sends an HTTP request (e.g., `PUT /default/key/mykey`) to any node.
-2.  **🖥️ Local Processing:** The receiving node updates/reads its **in‑memory** store 💭 immediately.
-3.  **💾 Persistence:** The node periodically saves its memory state to `storage.db` for durability.
-4.  **🔄 Cluster Synchronization (Gossip):**
-    *   Nodes exchange membership info & state updates periodically.
-    *   This ensures all nodes eventually converge to the same state (Eventual Consistency).
-    *   *Real‑time Updates:* Subscribed clients receive changes via SSE instantly (< 5ms) ⚡️.
-    *   **🚀 Performance Highlight:** A typical VPS node (1GB RAM, 100Mbps) handles up to **5000 concurrent live SSE connections**. Add more nodes to scale capacity!
-5.  **🤝 Joining:** A new node contacts an existing node (`JOIN_ADDRESS`), fetches the cluster state, and joins.
+DynaRust guarantees eventual consistency via asynchronous state synchronization. Requests are processed locally in memory, persisted to disk, and fanned out to peer nodes.
 
 ```ascii
                     +----------------+
                     |    Client      |
-                    |     👤         |
                     +----------------+
                         │ │   │ │
      HTTP: POST /auth   │ │   │ │ HTTP: PUT/GET/DELETE /{table}/key/{key}
@@ -323,246 +65,126 @@ DynaRust uses eventual consistency via state synchronization:
                         ↓ ↓   ↓ ↓
                +-----------------------+
                |  API Gateway (Actix)  |
-               |  • /auth/{user}       | ←── issues JWT on login
-               |    - registration      |
-               |    - login → JWT      |
-               |  • KV endpoints       |
-               |    - JWT guard on PUT/DELETE
-               |    - GET open to all   |
-               |  • /{table}/store,    |
-               |    /{table}/keys      |
-               |  • /{table}/subscribe │ ←── SSE subscription
+               |  • Auth & Validation  | ← issues/verifies JWT
+               |  • Route Handling     |
+               |  • SSE Subscriptions  | 
                +-----------------------+
                           │
                           │ local reads/writes
                           ↓
                +-----------------------+
                |  In‐Memory Store      |
-               |  (HashMap<String,     |
-               |   HashMap<String,     |
-               |   VersionedValue>)    |
-               |         💭            |
+               |  (DashMap)            |
                +-----------------------+
                   │           │
       internal    │           │ external
-      writes  ←───┘           │   writes
-      (X-Internal-Request)    │
+      writes  ←───┘           │ writes
                              ↓
                +-----------------------+
                |  Replication Module   |
-               |  (Fan‐out PUT/DEL to  |
-               |   all other nodes via |
-               |   HTTP + X-Internal)  |
+               |  (Fan‐out to peers)   |
                +-----------------------+
                   │           │
                   │ gossip    │ HTTP
                   │           ↓
                +------------------------------------+
                |     Other Nodes (Replicas)         |
-               |     — apply internal writes —      |
-               |                                    |
                +------------------------------------+
                           │
-                          │ periodic
-                          │ snapshot & WAL
+                          │ periodic snapshot & WAL
                           ↓
                +-----------------------+
                |  Disk Persistence     |
-               |  (cold_save, WAL)     |
-               |         💾            |
+               |  (storage.db)         |
                +-----------------------+
-
-Cluster Membership & Gossip (Eventual Consistency)
-──────────────────────────────────────────────────
-    ┌───────────────┐        gossip(UDP/HTTP)      ┌───────────────┐
-    │ Current Node  │  ── heartbeat & membership ─│ Other Node    │
-    │  (ClusterData)│  ──────────────────────────>│  (ClusterData)│
-    └───────────────┘  <─────────────────────────┘───────────────┘
-           🔄                                            🔄
-
-Legend:
- • Client: issues HTTP requests (and SSE connects).
- • API Gateway: Actix routes, JWT auth, validation, SubscriptionManager.
- • In‐Memory Store: local hashmaps of VersionedValue {value,version,timestamp,owner}.
- • Replication Module: fan‑out writes to peers using `X-Internal-Request`.
- • Other Nodes: receive internal requests, update memstore (no auth, no events).
- • Disk Persistence: periodic snapshots + WAL for durability.
- • Cluster Membership: heartbeat sync via broadcaster tasks for node discovery.
- • SSE Subscriptions: real‐time `EventSource` streams on `/subscribe/{key}`.
-
 ```
 
----
+-----
 
-## 🐳 Deployment with Docker
+## 🚀 Getting Started
 
-Docker simplifies deployment and dependency management.
+### Option 1: Build from Source
 
-### 🔧 Prerequisites
-
-*   **Docker:** Version 20.10 or newer installed and running.
-*   **🌐 Network Connectivity:** Ensure containers on the same Docker network can reach each other on the `LISTEN_ADDRESS` port (e.g., `6660`).
-
-### ▶️ Steps
-
-1.  **🧱 Build the Image (if not done):**
+1.  **Clone the Repository:**
     ```bash
-    docker build -t dynarust:latest .
-    ```
-
-2.  **🏃 Run the Container(s):**
-
-    *   **Running the First Node:**
-        ```bash
-        # Create a network first (recommended)
-        docker network create dynanet
-
-        # Start the first node, detached (-d), named, on the network, mapping host port 6660
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          dynarust:latest 0.0.0.0:6660
-        ```
-        *Listens on port 6660 inside the container.*
-
-    *   **Running Additional Nodes:**
-        Use the container name (`dynarust-node1`) and internal port (`6660`) as the `JOIN_ADDRESS`.
-        ```bash
-        # Start a second node, map host port 6661, join node1
-        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
-          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-
-    *   **💾 Data Persistence (Important!):**
-        Mount a volume to persist the `storage.db` file outside the container.
-        ```bash
-        # Create a named volume (e.g., dynarust-data1)
-        docker volume create dynarust-data1
-
-        # Run node1 with the volume mounted to /app (where storage.db is saved)
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          -v dynarust-data1:/app \
-          dynarust:latest 0.0.0.0:6660
-
-        # Run subsequent nodes with their own volumes
-        docker volume create dynarust-data2
-        docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
-          -v dynarust-data2:/app \
-          dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
-        ```
-        *(Adjust the mount source/target `/app` if your Dockerfile places `storage.db` elsewhere).*
-
----
-### 📦 Installation
-
-You can either build DynaRust directly from source or use a pre‑built Docker image.
-
-#### Option 1: Build from Source
-
-1.  **📂 Clone the Repository:**
-    ```bash
-    git clone https://github.com/yourfavDev/DynaRust # Replace with actual URL if needed
+    git clone https://github.com/yourfavDev/DynaRust
     cd DynaRust
     ```
-
-2.  **🧱 Build the Project:**
-    Compile the Rust code for an optimized release build:
+2.  **Compile the Binary:**
     ```bash
     cargo build --release
     ```
-    The final binary is located at `target/release/DynaRust`.
 
-#### Option 2: Using Docker 🐳
+### Option 2: Docker Deployment
 
-If you prefer containerization and have Docker installed:
-
-1.  **🧱 Build the Docker Image:**
-    From the repository’s root directory:
+1.  **Build the Image:**
     ```bash
     docker build -t dynarust:latest .
+    docker network create dynanet
     ```
-    This command builds a container image named `dynarust` with the tag `latest`.
----
+2.  **Run the Main Node:**
+    ```bash
+    docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
+      -v dynarust-data1:/app \
+      dynarust:latest 0.0.0.0:6660
+    ```
+3.  **Run Additional Nodes (Cluster Setup):**
+    ```bash
+    docker run -d --name dynarust-node2 --network dynanet -p 6661:6660 \
+      -v dynarust-data2:/app \
+      dynarust:latest 0.0.0.0:6660 dynarust-node1:6660
+    ```
 
-## ▶️ Running DynaRust
+-----
 
-After building (or using Docker), start DynaRust nodes using command‑line arguments to set the listening address and (optionally) join an existing cluster.
+## 📡 API Reference
 
-**Command Syntax:**
+All write operations (`PUT`, `PATCH`, `DELETE`) require a valid JWT in the `Authorization: Bearer <token>` header. 
+
+| Operation | Endpoint | Method | Description |
+| :--- | :--- | :--- | :--- |
+| **Auth** | `/auth/{user}` | `POST` | Register or login (returns JWT token). Requires `{"secret": "pwd"}`. |
+| **Create/Update** | `/{table}/key/{key}` | `PUT` | Store a JSON value. Requires Auth. |
+| **Partial Update**| `/{table}/key/{key}` | `PATCH`| Merge updates into an existing value. Requires Auth. |
+| **Read** | `/{table}/key/{key}` | `GET` | Fetch the latest version of a key. |
+| **Delete** | `/{table}/key/{key}` | `DELETE`| Remove a key (owner only). Requires Auth. |
+| **List Keys** | `/{table}/keys` | `GET` | Returns an array of all keys in a table. |
+| **Batch Fetch** | `/{table}/keys` | `POST` | Pass an array of keys in the body to fetch multiple values. |
+| **Fetch Table** | `/{table}/store` | `GET` | Returns the entire key-value store for a specific table. |
+| **Subscribe** | `/{table}/subscribe/{key}`| `GET` | Establish an SSE connection for real-time `< 5ms` updates. |
+| **Node Stats** | `/stats` | `GET` | View cluster health and node statistics. |
+
+### Quick `curl` Examples
 
 ```bash
-./target/release/DynaRust <LISTEN_ADDRESS> [JOIN_ADDRESS]
+# 1. Register & get token
+TOKEN=$(curl -s -X POST http://localhost:6660/auth/alice \
+  -H "Content-Type: application/json" \
+  -d '{"secret":"s3cr3t"}' | jq -r .token)
+
+# 2. Store a value
+curl -i -X PUT http://localhost:6660/default/key/foo \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"value": {"name": "bar"}}'
+
+# 3. Partially update the value
+curl -i -X PATCH http://localhost:6660/default/key/foo \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"age": 30}'
+
+# 4. Subscribe to live changes
+curl -N http://localhost:6660/default/subscribe/foo
 ```
 
-*   **`LISTEN_ADDRESS` (Required):** 📡 The IP address and port for this node to listen on (e.g., `127.0.0.1:6660` for local, `0.0.0.0:6660` for all interfaces).
-*   **`JOIN_ADDRESS` (Optional):** 🔗 The IP address and port of an existing DynaRust node to join. Omit this to start a new cluster.
+-----
 
-**Example 1: Start the First Node 🟢**
+## 🛠️ Troubleshooting
 
-Starts a single node locally on port 6660, forming a new cluster:
-```bash
-./target/release/DynaRust 127.0.0.1:6660
-```
-*Check the terminal for output logs 📝.*
+  * **Node Fails to Join:** Ensure the target `JOIN_ADDRESS` is reachable. In Docker, confirm the containers are on the same bridge network and you are using the correct internal hostnames/ports.
+  * **Inconsistent Reads:** Allow a brief moment for the gossip protocol to propagate state (eventual consistency). You can verify cluster membership by checking `http://<node-address>/stats`.
+  * **Data Lost After Restart:** Ensure the process has write permissions to the directory containing `storage.db`. If using Docker, verify that you have properly mounted a volume to `/app`.
+  * **Debugging:** Enable verbose logging by running the node with `RUST_LOG=debug`.
 
-**Example 2: Start a Second Node and Join the First 🔗**
-
-Starts a second node on port 6661 and joins the cluster via the first node (`127.0.0.1:6660`):
-```bash
-./target/release/DynaRust 127.0.0.1:6661 127.0.0.1:6660
-```
-*The new node synchronizes its state with the cluster 🤝.*
-
-Add more nodes by providing unique `LISTEN_ADDRESS` values and specifying any existing node as the `JOIN_ADDRESS`.
-
----
-
-## 📡 Using the API
-
-Interact with your DynaRust cluster using standard HTTP requests. Send requests to *any* node; the system handles routing and consistency internally.
-
-**❗️ Important Notes:**
-
-*   Replace `localhost:6660` in examples with the actual `LISTEN_ADDRESS` of a running node.
-*   Replace `{table}` with your desired table name (e.g., `default`, `users`, `products`). If omitted, the `"default"` table is used implicitly in older versions, but explicit use is recommended.
-*   For `PUT` requests, the body **must** be JSON (e.g., `{"value": "your-data"}`) and the `Content-Type: application/json` header must be set.
----
-## 🆘 Troubleshooting
-
-Encountering issues? Check these common points:
-
-1.  **❌ Node Fails to Join Cluster:**
-    *   **Target Node Running?** Is the node at `JOIN_ADDRESS` active?
-    *   **Network:** Can the joining node reach the `JOIN_ADDRESS` (IP & port)?
-        *   *Native:* Use `ping <ip>` and `nc -zv <ip> <port>`.
-        *   *Docker:* Are containers on the same `docker network`? Use container names (e.g., `dynarust-node1:6660`). Check `docker logs <container_name>`.
-    *   **Address/Port Match?** Double-check `LISTEN_ADDRESS` and `JOIN_ADDRESS`.
-    *   **Logs:** Check logs on *both* nodes (see Debugging below).
-
-2.  **❓ Data Not Synchronizing / Inconsistent Reads:**
-    *   **Patience:** Eventual consistency takes time (usually milliseconds to seconds). Allow a brief moment for gossip.
-    *   **Membership:** Check cluster view: `curl http://<any-node-address>/membership`. Are all nodes listed?
-    *   **Logs:** Look for network errors or sync issues.
-
-3.  **❓💾 Data Lost After Restart:**
-    *   **Permissions:** Does the process have write access to the directory containing `storage.db`? Enough disk space?
-    *   **Docker Persistence:** Did you mount a volume correctly (see [Deployment with Docker](#-deployment-with-docker))? Without a volume, data is lost when the container stops.
-
-4.  **🐞 General Debugging:**
-    Enable detailed logs using the `RUST_LOG` environment variable:
-    *   **Native Execution:**
-        ```bash
-        RUST_LOG=debug ./target/release/DynaRust <LISTEN_ADDRESS> [JOIN_ADDRESS]
-        ```
-    *   **Docker Execution:** Add `-e RUST_LOG=debug` to your `docker run` command.
-        ```bash
-        docker run -d --name dynarust-node1 --network dynanet -p 6660:6660 \
-          -v dynarust-data1:/app \
-          -e RUST_LOG=debug \
-          dynarust:latest 0.0.0.0:6660
-        ```
-       Then check logs: `docker logs dynarust-node1`
-
----
-
-With robust real‑time updates (up to **5000 live connections per node** 🔥) and seamless scalability 🚀, DynaRust is ideal for applications needing instantaneous data propagation across distributed environments. Enjoy building! 🎉
-
----
+-----
