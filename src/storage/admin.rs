@@ -195,12 +195,13 @@ pub async fn admin_delete_record(
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
             let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+            let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
             tokio::spawn(async move {
                 let _permit = permit;
                 let _ = client_clone
                     .delete(&url)
-                    .header("X-Internal-Request", "true")
+                    .header("X-Internal-Request", cluster_secret)
                     .timeout(std::time::Duration::from_secs(3))
                     .send()
                     .await;
@@ -244,8 +245,7 @@ async fn replicate_admin_change(
             let _permit = permit;
             let _ = cli
                 .put(&url)
-                .header("X-Internal-Request", "true")
-                .header("SECRET", &secret_clone)
+                .header("X-Internal-Request", &secret_clone)
                 .json(&payload)
                 .send()
                 .await;

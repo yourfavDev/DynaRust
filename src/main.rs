@@ -93,6 +93,7 @@ async fn main() -> std::io::Result<()> {
     // (Optionally) Ensure the default table exists in memory.
     state.store.entry("default".to_string()).or_default();
     start_snapshot_task(&state);
+    
 
     // Initialize cluster data with dynamic membership.
     let mut initial_nodes = HashMap::new();

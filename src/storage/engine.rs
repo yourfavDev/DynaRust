@@ -1,20 +1,20 @@
-use tokio::sync::Semaphore;
 use crate::Arc;
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
-use futures::future::BoxFuture;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-use std::{env, process};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
-use web::Json;
+use crate::network::broadcaster::gossip_membership;
 use crate::storage::subscription::{KeyEvent, SubscriptionManager};
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
+use futures::future::BoxFuture;
+use jsonwebtoken::{DecodingKey, Validation, decode};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, process};
+use tokio::sync::RwLock;
+use tokio::sync::Semaphore;
 use tokio::time;
-use crate::network::broadcaster::{gossip_membership};
+use web::Json;
 //
 // CONSTANTS & TYPES
 //
@@ -155,14 +155,18 @@ pub fn get_active_nodes(nodes: &HashMap<String, NodeInfo>) -> Vec<String> {
 }
 
 /// Computes replication targets for a given key.
-pub fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: usize) -> Vec<String> {
+pub fn get_replication_nodes(
+    key: &str,
+    nodes: &[String],
+    replication_factor: usize,
+) -> Vec<String> {
     if nodes.is_empty() {
         return Vec::new();
     }
 
     let replication_factor = replication_factor.min(nodes.len());
     let mut ring = std::collections::BTreeMap::new();
-    let virtual_nodes = 10; 
+    let virtual_nodes = 10;
 
     for node in nodes {
         for v in 0..virtual_nodes {
@@ -177,11 +181,11 @@ pub fn get_replication_nodes(key: &str, nodes: &[String], replication_factor: us
     let key_hash = hasher.finish();
 
     let mut targets = Vec::with_capacity(replication_factor);
-    
+
     // Chain iterators to wrap around the ring
     let iter1 = ring.range(key_hash..).map(|(_, v)| v);
     let iter2 = ring.range(..key_hash).map(|(_, v)| v);
-    
+
     for node in iter1.chain(iter2) {
         if !targets.contains(node) {
             targets.push(node.clone());
@@ -242,12 +246,14 @@ pub async fn get_value(
     sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     // 1️⃣ Internal Replication Request - Verify Secret
     if let Some(internal_req) = req.headers().get("X-Internal-Request") {
         if internal_req.to_str().unwrap_or("") == cluster_secret {
-            let result = state.store
+            let result = state
+                .store
                 .get(&table_name)
                 .and_then(|table| table.get(&key_val).map(|v| v.clone()));
             return HttpResponse::Ok().json(result);
@@ -268,7 +274,8 @@ pub async fn get_value(
     let replication_factor = active_nodes.len();
     let targets = get_replication_nodes(&key_val, &active_nodes, replication_factor);
 
-    let mut futures_vec: Vec<BoxFuture<'static, Result<(String, Option<VersionedValue>), String>>> = Vec::new();
+    let mut futures_vec: Vec<BoxFuture<'static, Result<(String, Option<VersionedValue>), String>>> =
+        Vec::new();
 
     for target in targets.into_iter() {
         let target_clone = target.clone();
@@ -276,10 +283,11 @@ pub async fn get_value(
             let state_clone = state.clone();
             let table_name_clone = table_name.clone();
             let key_clone = key_val.clone();
-            
+
             let fut: BoxFuture<'static, Result<(String, Option<VersionedValue>), String>> =
                 Box::pin(async move {
-                    let result = state_clone.store
+                    let result = state_clone
+                        .store
                         .get(&table_name_clone)
                         .and_then(|table| table.get(&key_clone).map(|v| v.clone()));
                     Ok((target_clone, result))
@@ -289,7 +297,7 @@ pub async fn get_value(
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_inner = client.get_ref().clone();
             let secret_clone = cluster_secret.clone();
-            
+
             let fut: BoxFuture<'static, Result<(String, Option<VersionedValue>), String>> =
                 Box::pin(async move {
                     match client_inner
@@ -374,15 +382,21 @@ pub async fn get_value(
             let key_repair = key_val.clone();
             let secret_repair = cluster_secret.clone();
             let target = addr.clone();
-            let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+            let permit = <Arc<Semaphore> as Clone>::clone(&sem)
+                .acquire_owned()
+                .await
+                .unwrap();
 
             tokio::spawn(async move {
                 let _permit = permit;
-                let url = format!("http://{}/internal/{}/key/{}", target, table_repair, key_repair);
-                let _ = cli.put(&url)
+                let url = format!(
+                    "http://{}/internal/{}/key/{}",
+                    target, table_repair, key_repair
+                );
+                let _ = cli
+                    .put(&url)
                     // FIX: Send the actual secret instead of "true"
                     .header("X-Internal-Request", &secret_repair)
-                    .header("SECRET", &secret_repair)
                     .json(&latest_repair)
                     .send()
                     .await;
@@ -451,20 +465,21 @@ pub async fn patch_value(
     drop(cluster);
 
     let targets = get_replication_nodes(&key_val, &active, active.len());
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     for target in targets {
         if target == *current_addr.get_ref() {
             continue;
         }
         // acquire a permit (will await if > 20 in flight)
-        let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+        let permit = <Arc<Semaphore> as Clone>::clone(&sem)
+            .acquire_owned()
+            .await
+            .unwrap();
         let cli = client.clone();
         let payload = new_value.clone();
-        let url = format!(
-            "http://{}/internal/{}/key/{}",
-            target, table_name, key_val
-        );
+        let url = format!("http://{}/internal/{}/key/{}", target, table_name, key_val);
 
         let secret_clone = cluster_secret.clone();
 
@@ -478,7 +493,6 @@ pub async fn patch_value(
                     .put(&url)
                     // FIX: Send the actual secret instead of "true"
                     .header("X-Internal-Request", &secret_clone)
-                    .header("SECRET", &secret_clone)
                     .json(&payload)
                     .send()
                     .await
@@ -532,7 +546,8 @@ pub async fn put_value(
             existing.update(body.0.clone(), current_addr.get_ref().clone());
             existing.clone()
         } else {
-            let v = VersionedValue::new(body.0.clone(), user.clone(), current_addr.get_ref().clone());
+            let v =
+                VersionedValue::new(body.0.clone(), user.clone(), current_addr.get_ref().clone());
             table.insert(key_val.clone(), v.clone());
             v
         }
@@ -549,20 +564,18 @@ pub async fn put_value(
     drop(cluster);
 
     let targets = get_replication_nodes(&key_val, &active, active.len());
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     for target in targets {
-        if target == *current_addr.get_ref() {
-            continue;
-        }
         // acquire a permit (will await if > 20 in flight)
-        let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+        let permit = <Arc<Semaphore> as Clone>::clone(&sem)
+            .acquire_owned()
+            .await
+            .unwrap();
         let cli = client.clone();
         let payload = new_value.clone();
-        let url = format!(
-            "http://{}/internal/{}/key/{}",
-            target, table_name, key_val
-        );
+        let url = format!("http://{}/internal/{}/key/{}", target, table_name, key_val);
 
         let secret_clone = cluster_secret.clone();
 
@@ -576,13 +589,24 @@ pub async fn put_value(
                     .put(&url)
                     // FIX: Send the actual secret instead of "true"
                     .header("X-Internal-Request", &secret_clone)
-                    .header("SECRET", &secret_clone)
                     .json(&payload)
                     .send()
                     .await
                 {
-                    Ok(resp) if resp.status().is_success() => break,
-                    _ => {
+                    Ok(resp) if resp.status().is_success() => {
+                        break;
+                    }
+                    // 2. Add a catch-all for requests that connect, but return a bad HTTP status code
+                    Ok(resp) => {
+                        println!("Replication failed with status: {}", resp.status());
+                        retries -= 1;
+                        if retries > 0 {
+                            tokio::time::sleep(backoff).await;
+                            backoff *= 2;
+                        }
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
                         retries -= 1;
                         if retries > 0 {
                             tokio::time::sleep(backoff).await;
@@ -607,9 +631,14 @@ pub async fn put_value_internal(
     let (table_name, key_val) = path.into_inner();
 
     // 1️⃣ Cluster‐secret check
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
-    let provided_secret = req.headers().get("SECRET").and_then(|h| h.to_str().ok()).unwrap_or("");
-    
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let provided_secret = req
+        .headers()
+        .get("X-Internal-Request")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
     if provided_secret != cluster_secret {
         return HttpResponse::Unauthorized().finish();
     }
@@ -621,7 +650,9 @@ pub async fn put_value_internal(
     let cached = table
         .entry(key_val.clone())
         .and_modify(|existing| {
-            if incoming.dominates(existing) || (!existing.dominates(&incoming) && incoming.timestamp > existing.timestamp) {
+            if incoming.dominates(existing)
+                || (!existing.dominates(&incoming) && incoming.timestamp > existing.timestamp)
+            {
                 *existing = incoming.clone();
             }
         })
@@ -648,7 +679,8 @@ pub async fn delete_value(
     sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
     let (table_name, key_val) = path.into_inner();
-    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     // FIX: Internal requests bypass auth ONLY if the secret matches.
     if let Some(internal_req) = req.headers().get("X-Internal-Request") {
@@ -670,7 +702,9 @@ pub async fn delete_value(
     };
 
     // Check if the requester is the owner.
-    let authorized = state.store.get(&table_name)
+    let authorized = state
+        .store
+        .get(&table_name)
         .and_then(|table| table.get(&key_val).map(|v| v.owner == user))
         .unwrap_or(false);
 
@@ -707,9 +741,12 @@ pub async fn delete_value(
             let url = format!("http://{}/{}/key/{}", target, table_name, key_val);
             let client_clone = client.clone();
             let secret_clone = cluster_secret.clone();
-            
+
             // Acquire permit to cap concurrent outgoing replication tasks
-            let permit = <Arc<Semaphore> as Clone>::clone(&sem).acquire_owned().await.unwrap();
+            let permit = <Arc<Semaphore> as Clone>::clone(&sem)
+                .acquire_owned()
+                .await
+                .unwrap();
 
             tokio::spawn(async move {
                 let _permit = permit; // Permit is held until the deletion request completes
@@ -738,7 +775,7 @@ pub async fn delete_value(
             });
         }
     }
-    
+
     HttpResponse::Ok().json(json!({"message": local_status}))
 }
 
@@ -758,10 +795,7 @@ pub async fn get_table_store(
     }
 }
 
-pub async fn get_all_keys(
-    table: web::Path<String>,
-    state: web::Data<AppState>,
-) -> impl Responder {
+pub async fn get_all_keys(table: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
     let table_name = table.into_inner();
     if let Some(table_db) = state.store.get(&table_name) {
         let keys: Vec<String> = table_db.iter().map(|kv| kv.key().clone()).collect();
@@ -803,8 +837,8 @@ pub async fn join_cluster(
     client: web::Data<reqwest::Client>,
     sem: web::Data<Arc<Semaphore>>,
 ) -> impl Responder {
-    let cluster_secret = env::var("CLUSTER_SECRET")
-        .unwrap_or_else(|_| "default_secret".to_string());
+    let cluster_secret =
+        env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
     if request.secret != cluster_secret {
         return HttpResponse::Unauthorized().body("Invalid cluster secret");
@@ -813,7 +847,7 @@ pub async fn join_cluster(
     let new_node = request.node.clone();
     let cluster2 = cluster.clone();
     let mut nodes_guard = cluster.nodes.write().await;
-    
+
     if !nodes_guard.contains_key(&new_node) {
         nodes_guard.insert(
             new_node.clone(),
@@ -823,13 +857,13 @@ pub async fn join_cluster(
             },
         );
 
-        // Safely bound the background sleep/gossip task. 
+        // Safely bound the background sleep/gossip task.
         // If the system is maxed out, we skip the background gossip rather than queuing unbound tasks.
         if let Ok(permit) = <Arc<Semaphore> as Clone>::clone(&sem).try_acquire_owned() {
             tokio::spawn(async move {
                 let _permit = permit; // Permit held during the sleep and gossip phase
                 time::sleep(std::time::Duration::from_secs(5)).await;
-                
+
                 let args: Vec<String> = env::args().collect();
                 if args.len() > 1 {
                     let current_node = args[1].clone();
@@ -837,18 +871,17 @@ pub async fn join_cluster(
                 }
             });
         } else {
-            eprintln!("Warning: Dropping gossip broadcast for new node {} due to high load", new_node);
+            eprintln!(
+                "Warning: Dropping gossip broadcast for new node {} due to high load",
+                new_node
+            );
         }
     }
-    
+
     HttpResponse::Ok().json(nodes_guard.clone())
 }
-pub async fn get_global_store(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-) -> impl Responder {
-    let valid_api_key = env::var("CLUSTER_SECRET")
-        .unwrap_or_else(|_| "default_secret".to_string());
+pub async fn get_global_store(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
+    let valid_api_key = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
     match req.headers().get("x-api-key") {
         Some(header_value) => {
             if let Ok(api_key) = header_value.to_str() {

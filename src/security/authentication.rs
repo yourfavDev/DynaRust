@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use hex;
 use chrono::{Utc, Duration};
 use std::collections::HashMap;
+use std::env;
 use jsonwebtoken::{encode, Header, EncodingKey};
 
 use crate::storage::engine::{get_active_nodes, get_jwt_secret, get_replication_nodes, AppState, ClusterData, VersionedValue};
@@ -36,38 +37,43 @@ pub async fn access(
 
     println!("Access request for user: {}", username);
 
-    // Internal replication requests bypass authentication
-    if req.headers().contains_key("X-Internal-Request") {
-        let provided_secret = match bincode::deserialize::<AccessToken>(&body) {
-            Ok(t) => t.secret,
-            Err(_) => return HttpResponse::BadRequest().finish(),
-        };
 
-        println!("Processing internal replication request for {}", username);
+    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
-        // Simplified internal replication handling
-        let auth_table = state.store.entry("auth".to_string()).or_default();
+    // Internal replication requests - verify secret matching
+    if let Some(internal_req) = req.headers().get("X-Internal-Request") {
+        if internal_req.to_str().unwrap_or("") == cluster_secret {
+            let provided_secret = match bincode::deserialize::<AccessToken>(&body) {
+                Ok(t) => t.secret,
+                Err(_) => return HttpResponse::BadRequest().finish(),
+            };
 
-        // For internal requests, use the provided hash directly
-        let mut value_map = HashMap::new();
-        value_map.insert("secret".to_string(), json!(provided_secret));
+            println!("Processing internal replication request for {}", username);
 
-        let user_header = req.headers().get("User")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or(&username);
+            // Simplified internal replication handling
+            let auth_table = state.store.entry("auth".to_string()).or_default();
 
-        let new_rec = VersionedValue::new(value_map, String::from(user_header), current_addr.get_ref().clone());
-        auth_table.insert(username.clone(), new_rec.clone());
+            // For internal requests, use the provided hash directly
+            let mut value_map = HashMap::new();
+            value_map.insert("secret".to_string(), json!(provided_secret));
 
-        println!("Successfully replicated user: {}", username);
+            let user_header = req.headers().get("User")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or(&username);
 
-        sub_manager
-            .notify(&"auth".to_string(), &username, KeyEvent::Updated(new_rec.clone()))
-            .await;
+            let new_rec = VersionedValue::new(value_map, String::from(user_header), current_addr.get_ref().clone());
+            auth_table.insert(username.clone(), new_rec.clone());
 
-        return HttpResponse::Created().json(json!({
-            "status": "User replicated"
-        }));
+            println!("Successfully replicated user: {}", username);
+
+            sub_manager
+                .notify(&"auth".to_string(), &username, KeyEvent::Updated(new_rec.clone()))
+                .await;
+
+            return HttpResponse::Created().json(json!({
+                "status": "User replicated"
+            }));
+        }
     }
 
     // Regular authentication flow
@@ -163,10 +169,11 @@ pub async fn access(
                     println!("Sending replication request to: {}", url);
                     // Create the payload with the same structure as AccessToken
                     let payload = AccessToken { secret: secret_clone };
+                    let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
                     let result = client_clone
                         .post(&url)
-                        .header("X-Internal-Request", "true")
+                        .header("X-Internal-Request", cluster_secret)
                         .header("User", &username_clone)
                         .header("Content-Type", "application/octet-stream")
                         .body(bincode::serialize(&payload).unwrap())
