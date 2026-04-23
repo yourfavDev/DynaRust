@@ -1,2 +1,5 @@
 target/
-
+snapshots/*
+data/*
+cert/*
+DynaRust
