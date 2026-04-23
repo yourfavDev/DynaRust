@@ -1,2 +1,6 @@
 target/
-
+snapshots/*
+data/*
+cert/*
+DynaRust
+encryption.key
