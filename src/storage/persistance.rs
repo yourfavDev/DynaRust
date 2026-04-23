@@ -16,9 +16,11 @@ use rand_core::TryRngCore;
 
 use crate::storage::engine::{AppState, VersionedValue};
 
+
 const KEY: &[u8; 32] = include_bytes!(
+    // See an error? Run bash encryption.sh
     concat!(env!("CARGO_MANIFEST_DIR"), "/encryption.key")
-);
+); 
 pub fn encrypt(plain: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Initialize cipher with a 256‐bit key
     let cipher = Aes256Gcm::new(KEY.into());

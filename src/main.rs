@@ -1,6 +1,5 @@
 mod storage;
 mod network;
-mod tokenizer;
 mod security;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod, SslVerifyMode};
 
