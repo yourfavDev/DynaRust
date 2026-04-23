@@ -85,7 +85,7 @@ async fn check_node_health(
         let guard = cluster_data.nodes.read().await;
         let mut potential_nodes: Vec<String> = guard
             .iter()
-            .filter(|(node, info)| *node != current_addr && (info.status == NodeStatus::Active || info.status == NodeStatus::Suspect))
+            .filter(|(node, info)| *node != current_addr && (info.status == NodeStatus::Active || info.status == NodeStatus::Suspect || info.status == NodeStatus::Down))
             .map(|(node, _)| node.clone())
             .collect();
 
@@ -94,7 +94,7 @@ async fn check_node_health(
         potential_nodes.into_iter().take(3).collect::<Vec<_>>()
     };
 
-    let timeout_threshold = (interval_sec as u128) * 2000;
+    let timeout_threshold = (interval_sec as u128) * 5000;
 
     for target in nodes_to_check {
         let url = build_url(&target, "heartbeat");
@@ -278,7 +278,7 @@ pub async fn update_membership(
         Ok(v) => v,
         Err(_) => return HttpResponse::BadRequest().finish(),
     };
-    let mut updated = false;
+
 
     for (node, info) in incoming.into_iter() {
         // 2. Input Validation (ensure it's not empty and has no spaces)
@@ -296,7 +296,7 @@ pub async fn update_membership(
             }
 
             local_guard.insert(node, info);
-            updated = true;
+         
             continue;
         }
 
@@ -304,13 +304,10 @@ pub async fn update_membership(
         let existing = local_guard.get(&node).unwrap();
         if info.last_heartbeat > existing.last_heartbeat {
             local_guard.insert(node, info);
-            updated = true;
+            
         }
     }
 
-    if updated {
-        println!("Updated membership: {:?}", *local_guard);
-    }
 
     HttpResponse::Ok().finish()
 }
