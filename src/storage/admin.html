@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
@@ -169,8 +170,15 @@
             gap: 1rem;
         }
 
-        .btn-danger { background-color: var(--danger); color: white; }
-        .btn-success { background-color: var(--success); color: black; }
+        .btn-danger {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .btn-success {
+            background-color: var(--success);
+            color: black;
+        }
 
         /* Secondary Sidebar (Keys) */
         #keys-sidebar {
@@ -196,10 +204,18 @@
             text-overflow: ellipsis;
         }
 
-        .key-item:hover { background-color: #333; }
-        .key-item.active { color: var(--accent); font-weight: bold; }
+        .key-item:hover {
+            background-color: #333;
+        }
 
-        .hidden { display: none !important; }
+        .key-item.active {
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        .hidden {
+            display: none !important;
+        }
 
         .stats-grid {
             display: grid;
@@ -221,6 +237,7 @@
         }
     </style>
 </head>
+
 <body>
 
     <div id="login-screen">
@@ -228,7 +245,8 @@
         <div id="login-form">
             <input type="password" id="admin-password" placeholder="Master Password">
             <button id="login-btn">Login</button>
-            <p id="login-error" style="color: var(--danger); font-size: 0.8rem; margin-top: 1rem; text-align: center;" class="hidden">Invalid Password</p>
+            <p id="login-error" style="color: var(--danger); font-size: 0.8rem; margin-top: 1rem; text-align: center;"
+                class="hidden">Invalid Password</p>
         </div>
     </div>
 
@@ -246,8 +264,10 @@
         <header>
             <h2 id="current-table-name">Select a Table</h2>
             <div class="actions">
-                <button id="create-record-btn" class="btn-success" style="width: auto; padding: 0.5rem 1rem;">+ New Record</button>
-                <button id="logout-btn" style="width: auto; padding: 0.5rem 1rem; background: #444; color: white;">Logout</button>
+                <button id="create-record-btn" class="btn-success" style="width: auto; padding: 0.5rem 1rem;">+ New
+                    Record</button>
+                <button id="logout-btn"
+                    style="width: auto; padding: 0.5rem 1rem; background: #444; color: white;">Logout</button>
             </div>
         </header>
 
@@ -255,24 +275,29 @@
             <div id="no-record-selected" style="text-align: center; color: var(--text-muted); margin-top: 5rem;">
                 Select a key from the right sidebar to view or edit its data.
             </div>
-            
+
             <div id="editor-container" class="hidden">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
                         <h3 id="current-key-name">Key: <span></span></h3>
-                        <span id="version-badge" style="background: #444; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Version: 0</span>
+                        <span id="version-badge"
+                            style="background: #444; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Version:
+                            0</span>
                     </div>
                     <label style="display: block; margin-bottom: 0.5rem; color: var(--text-muted);">JSON Content</label>
                     <textarea id="json-editor"></textarea>
                     <div class="actions" style="margin-top: 1.5rem; justify-content: flex-end;">
-                        <button id="delete-btn" class="btn-danger" style="width: auto; padding: 0.6rem 1.5rem;">Delete</button>
-                        <button id="save-btn" class="btn-success" style="width: auto; padding: 0.6rem 1.5rem;">Save Changes</button>
+                        <button id="delete-btn" class="btn-danger"
+                            style="width: auto; padding: 0.6rem 1.5rem;">Delete</button>
+                        <button id="save-btn" class="btn-success" style="width: auto; padding: 0.6rem 1.5rem;">Save
+                            Changes</button>
                     </div>
                 </div>
 
                 <div class="card" style="margin-top: 1.5rem;">
                     <h3>Record Metadata</h3>
-                    <div id="metadata-view" style="font-family: monospace; font-size: 0.9rem; color: var(--text-muted);">
+                    <div id="metadata-view"
+                        style="font-family: monospace; font-size: 0.9rem; color: var(--text-muted);">
                         <!-- Metadata here -->
                     </div>
                 </div>
@@ -290,7 +315,8 @@
     <div id="keys-sidebar" class="hidden">
         <div class="sidebar-header">
             <span>Keys</span>
-            <input type="text" id="key-search" placeholder="Filter keys..." style="margin: 0; padding: 0.3rem; font-size: 0.8rem; width: 120px;">
+            <input type="text" id="key-search" placeholder="Filter keys..."
+                style="margin: 0; padding: 0.3rem; font-size: 0.8rem; width: 120px;">
         </div>
         <div id="keys-list">
             <!-- Keys will be loaded here -->
@@ -441,7 +467,7 @@
             try {
                 const keys = await API.getKeys(currentTable);
                 renderKeys(keys);
-                
+
                 keySearch.oninput = (e) => {
                     const filter = e.target.value.toLowerCase();
                     const filtered = keys.filter(k => k.toLowerCase().includes(filter));
@@ -467,17 +493,27 @@
             document.querySelectorAll('.key-item').forEach(el => {
                 el.classList.toggle('active', el.textContent === key);
             });
-            
+
             try {
                 const record = await API.getRecord(currentTable, key);
                 currentData = record;
                 jsonEditor.value = JSON.stringify(record.value, null, 4);
                 currentKeyNameDisp.textContent = key;
-                versionBadge.textContent = `Version: ${record.version}`;
+                versionBadge.textContent = `Last Updated: ${new Date(record.timestamp).toLocaleString()}`;
                 metadataView.innerHTML = `
                     <div>Owner: ${record.owner}</div>
-                    <div>Timestamp: ${new Date(record.timestamp).toLocaleString()}</div>
-                    <div>Raw Version: ${record.version}</div>
+
+                    <div class="vector-clock-wrapper">
+                    <span class="vc-label">Vector Clock:</span>
+                    <div class="vc-badges">
+                        ${Object.entries(record.vector_clock).map(([nodeId, tick]) => `
+                        <span class="vc-badge">
+                            <span class="vc-node">${nodeId}</span>
+                            <span class="vc-tick">${tick}</span>
+                        </span>
+                        `).join('')}
+                    </div>
+                    </div>
                 `;
                 noRecordSelected.classList.add('hidden');
                 editorContainer.classList.remove('hidden');
@@ -531,4 +567,5 @@
         init();
     </script>
 </body>
+
 </html>
